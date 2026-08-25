@@ -1,0 +1,39 @@
+# Python and tooling
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local data and model artifacts; raw/processed MovieLens data is never committed.
+/data/
+/outputs/
+/artifacts/
+/bundles/
+.ci-smoke/
+/ci-smoke/
+/.bentoml/
+/bentos/
+dist/
+*.pt
+*.pth
+*.npz
+*.npy
+*.tfevents.*
+
+# The downloaded legacy notebook is intentionally preserved but not tracked.
+mulvae-cf.ipynb
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Local Compose configuration and secrets
+.env
+.env.*
+!.env.example

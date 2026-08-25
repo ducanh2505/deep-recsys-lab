@@ -1,0 +1,14 @@
+name: synthetic
+raw_dir: data/raw
+processed_dir: data/processed-synthetic
+download_url: ""
+archive_name: ""
+ratings_file: ratings.csv
+movies_file: movies.csv
+positive_rating_threshold: 4.0
+min_positive_ratings: 2
+n_validation_users: 2
+n_test_users: 2
+fold_in_ratio: 0.8
+seed: 98765
+strict_user_counts: false

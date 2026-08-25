@@ -1,0 +1,80 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    env:
+      BENTOML_HOME: ${{ github.workspace }}/ci-smoke/bentoml-home
+      BENTOML_NO_LOCAL_URL: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.14"
+      - run: uv sync --extra cpu --extra dev
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy src
+      - run: uv run pytest --cov=deep_recsys_lab --cov-report=term-missing --cov-fail-under=85
+      - run: uv build
+      - name: Train and register the synthetic smoke model
+        run: uv run python -m deep_recsys_lab.smoke --output-dir ci-smoke
+      - name: Resolve the explicit model version
+        shell: bash
+        run: |
+          MODEL_TAG=$(uv run python -c 'import json; print(json.load(open("ci-smoke/smoke_result.json"))["model_tag"])')
+          echo "MODEL_TAG=$MODEL_TAG" >> "$GITHUB_ENV"
+          echo "MODEL_VERSION=${MODEL_TAG#*:}" >> "$GITHUB_ENV"
+      - name: Gate ONNX Runtime model-forward performance
+        run: |
+          uv run python scripts/benchmark_inference.py \
+            --checkpoint ci-smoke/run/best.pt \
+            --data-dir ci-smoke/data \
+            --model-tag "$MODEL_TAG" \
+            --output ci-smoke/inference-benchmark.json
+      - name: Build the versioned Bento
+        run: uv run bentoml build src --arg model_tag="$MODEL_TAG" --version "$MODEL_VERSION"
+      - name: Generate the OCI image with BentoML
+        run: uv run bentoml containerize "deep_recsys_service:$MODEL_VERSION" -t deep-recsys-lab:ci
+      - name: Container readiness, API, metrics, and adaptive-batching smoke test
+        shell: bash
+        run: |
+          docker run --detach --rm --name deep-recsys-ci -p 18000:3000 deep-recsys-lab:ci
+          trap 'docker stop deep-recsys-ci' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:18000/readyz; then break; fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18000/readyz
+          docker exec deep-recsys-ci python -c \
+            'import importlib.util; assert importlib.util.find_spec("torch") is None'
+          uv run python scripts/benchmark_service.py \
+            --base-url http://127.0.0.1:18000 \
+            --requests 80 \
+            --concurrency 8 \
+            --warmup 14 \
+            --require-adaptive-batching \
+            --output ci-smoke/benchmark.json
+          curl --fail --silent --request POST http://127.0.0.1:18000/recommend \
+            -H 'content-type: application/json' \
+            --data '{"movie_ids":[1,2,3,4,5],"top_k":2}'
+          curl --fail --silent --request POST http://127.0.0.1:18000/model_info \
+            -H 'content-type: application/json' \
+            --data '{}'
+          curl --fail --silent http://127.0.0.1:18000/metrics > ci-smoke/metrics.txt
+      - name: Upload serving verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bento-serving-smoke
+          path: |
+            ci-smoke/benchmark.json
+            ci-smoke/inference-benchmark.json
+            ci-smoke/metrics.txt

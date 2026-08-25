@@ -1,0 +1,13 @@
+defaults:
+  - dataset: movielens20m
+  - model: multvae
+  - trainer: default
+  - evaluation: default
+  - experiment: default
+  - _self_
+
+seed: 98765
+device: auto
+output_dir: outputs/multvae
+data_dir: data/processed
+model_version: multvae-v1

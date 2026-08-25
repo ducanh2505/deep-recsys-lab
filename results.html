@@ -1,0 +1,1069 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Results for the completed Multi-VAE MovieLens-20M run: training curves, selected validation checkpoint, paper-target context, and held-out test status."
+    />
+    <title>Run Results · Deep RecSys Lab</title>
+    <style>
+      :root {
+        --ink: #172033;
+        --muted: #68758a;
+        --line: #dfe6ef;
+        --surface: #ffffff;
+        --surface-soft: #f5f8fc;
+        --navy: #162541;
+        --blue: #2b66f6;
+        --blue-dark: #1e4ec5;
+        --blue-soft: #edf3ff;
+        --mint: #0a987f;
+        --mint-soft: #e9f8f4;
+        --violet: #7558d8;
+        --amber: #a9660d;
+        --amber-soft: #fff5df;
+        --coral: #d9654b;
+        --shadow: 0 20px 58px rgba(30, 52, 88, 0.09);
+        --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 88% 0%, rgba(66, 112, 245, 0.12), transparent 28rem),
+          linear-gradient(180deg, #f5f8fc 0, #ffffff 42rem);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      code,
+      .mono {
+        font-family: var(--mono);
+      }
+
+      :focus-visible {
+        outline: 3px solid rgba(43, 102, 246, 0.34);
+        outline-offset: 3px;
+      }
+
+      .skip-link {
+        position: fixed;
+        top: 10px;
+        left: 10px;
+        z-index: 10;
+        padding: 9px 12px;
+        border-radius: 8px;
+        color: #ffffff;
+        background: var(--navy);
+        transform: translateY(-150%);
+      }
+
+      .skip-link:focus {
+        transform: translateY(0);
+      }
+
+      .shell {
+        width: min(1180px, calc(100% - 40px));
+        margin: 0 auto;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 30px;
+        padding: 24px 0 20px;
+      }
+
+      .brand {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 11px;
+        font-size: 0.77rem;
+        font-weight: 850;
+        letter-spacing: 0.12em;
+        text-decoration: none;
+        text-transform: uppercase;
+      }
+
+      .brand-mark {
+        display: grid;
+        width: 30px;
+        height: 30px;
+        place-items: center;
+        border-radius: 10px;
+        color: #ffffff;
+        background: var(--blue);
+        box-shadow: 0 7px 16px rgba(43, 102, 246, 0.25);
+        font-size: 0.95rem;
+        letter-spacing: 0;
+      }
+
+      .nav {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 19px;
+      }
+
+      .nav a {
+        color: var(--muted);
+        font-size: 0.76rem;
+        font-weight: 760;
+        text-decoration: none;
+      }
+
+      .nav a:hover,
+      .nav a[aria-current="page"] {
+        color: var(--blue-dark);
+      }
+
+      .hero {
+        position: relative;
+        overflow: hidden;
+        margin: 24px 0 18px;
+        padding: 58px;
+        border-radius: 28px;
+        color: #ffffff;
+        background:
+          radial-gradient(circle at 87% 12%, rgba(83, 139, 255, 0.33), transparent 19rem),
+          linear-gradient(135deg, var(--navy) 0%, #203861 100%);
+        box-shadow: var(--shadow);
+      }
+
+      .hero::after {
+        position: absolute;
+        right: -90px;
+        bottom: -210px;
+        width: 430px;
+        height: 430px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 50%;
+        box-shadow:
+          0 0 0 38px rgba(255, 255, 255, 0.025),
+          0 0 0 76px rgba(255, 255, 255, 0.02);
+        content: "";
+      }
+
+      .eyebrow,
+      .section-kicker {
+        margin: 0 0 12px;
+        color: #88adff;
+        font-size: 0.7rem;
+        font-weight: 850;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+      }
+
+      .hero h1 {
+        position: relative;
+        z-index: 1;
+        max-width: 780px;
+        margin: 0 0 17px;
+        font-size: clamp(2.8rem, 7vw, 5.5rem);
+        font-weight: 800;
+        letter-spacing: -0.075em;
+        line-height: 0.95;
+      }
+
+      .hero-copy {
+        position: relative;
+        z-index: 1;
+        max-width: 720px;
+        margin: 0;
+        color: #c7d4e9;
+        font-size: 1.03rem;
+      }
+
+      .run-id {
+        display: inline-flex;
+        position: relative;
+        z-index: 1;
+        align-items: center;
+        gap: 8px;
+        margin-top: 24px;
+        padding: 8px 11px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 9px;
+        color: #e6edfa;
+        background: rgba(255, 255, 255, 0.07);
+        font-family: var(--mono);
+        font-size: 0.72rem;
+      }
+
+      .run-id::before {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #59d4b6;
+        box-shadow: 0 0 0 4px rgba(89, 212, 182, 0.13);
+        content: "";
+      }
+
+      .headline-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin: 18px 0 72px;
+      }
+
+      .headline-card {
+        min-height: 154px;
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--surface);
+        box-shadow: 0 9px 28px rgba(31, 45, 72, 0.045);
+      }
+
+      .headline-label {
+        display: block;
+        min-height: 35px;
+        margin-bottom: 12px;
+        color: var(--muted);
+        font-size: 0.7rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .headline-value {
+        display: block;
+        margin-bottom: 7px;
+        color: var(--blue-dark);
+        font-size: clamp(1.7rem, 3.8vw, 2.55rem);
+        font-weight: 820;
+        letter-spacing: -0.055em;
+        line-height: 1;
+      }
+
+      .headline-card.test-card .headline-value {
+        color: var(--amber);
+      }
+
+      .headline-detail {
+        color: var(--muted);
+        font-size: 0.76rem;
+      }
+
+      .section {
+        margin-bottom: 76px;
+      }
+
+      .section-head {
+        display: grid;
+        grid-template-columns: minmax(0, 0.8fr) minmax(320px, 0.55fr);
+        align-items: end;
+        gap: 54px;
+        margin-bottom: 24px;
+      }
+
+      .section-kicker {
+        color: var(--blue);
+      }
+
+      .section h2 {
+        margin: 0;
+        font-size: clamp(2rem, 4vw, 3.35rem);
+        font-weight: 800;
+        letter-spacing: -0.055em;
+        line-height: 1.02;
+      }
+
+      .section-intro {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.91rem;
+      }
+
+      .split-note {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 19px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+      }
+
+      .split-panel {
+        padding: 26px 28px;
+      }
+
+      .split-panel + .split-panel {
+        border-left: 1px solid var(--line);
+      }
+
+      .split-panel.test {
+        background: var(--amber-soft);
+      }
+
+      .split-tag {
+        display: inline-flex;
+        margin-bottom: 13px;
+        padding: 5px 8px;
+        border-radius: 7px;
+        color: var(--mint);
+        background: var(--mint-soft);
+        font-size: 0.64rem;
+        font-weight: 850;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+
+      .test .split-tag {
+        color: var(--amber);
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      .split-panel h3 {
+        margin: 0 0 8px;
+        font-size: 1.15rem;
+        letter-spacing: -0.025em;
+      }
+
+      .split-panel p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+
+      .split-panel code {
+        font-size: 0.78rem;
+      }
+
+      .charts {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+
+      .chart-card {
+        min-width: 0;
+        padding: 24px;
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: var(--surface);
+        box-shadow: 0 12px 34px rgba(31, 45, 72, 0.055);
+      }
+
+      .chart-card h3 {
+        margin: 0 0 5px;
+        font-size: 1.05rem;
+        letter-spacing: -0.02em;
+      }
+
+      .chart-subtitle {
+        margin: 0 0 16px;
+        color: var(--muted);
+        font-size: 0.77rem;
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 8px;
+        color: var(--muted);
+        font-size: 0.7rem;
+        font-weight: 720;
+      }
+
+      .legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .legend i {
+        width: 17px;
+        height: 3px;
+        border-radius: 999px;
+        background: var(--series-color);
+      }
+
+      .chart {
+        width: 100%;
+        min-height: 260px;
+      }
+
+      .chart svg {
+        display: block;
+        width: 100%;
+        height: auto;
+        overflow: visible;
+      }
+
+      .chart-grid {
+        stroke: #e7ecf3;
+        stroke-width: 1;
+      }
+
+      .chart-label {
+        fill: #7b8799;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        font-size: 10px;
+      }
+
+      .chart-axis-title {
+        fill: #68758a;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        font-size: 10px;
+        font-weight: 750;
+      }
+
+      .chart-source {
+        margin: 12px 0 0;
+        color: var(--muted);
+        font-size: 0.7rem;
+      }
+
+      .selection-note {
+        margin: 14px 0 0;
+        padding: 12px 14px;
+        border-radius: 11px;
+        color: #31517b;
+        background: var(--blue-soft);
+        font-size: 0.76rem;
+      }
+
+      .comparison {
+        overflow-x: auto;
+        border: 1px solid var(--line);
+        border-radius: 19px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        text-align: left;
+      }
+
+      th,
+      td {
+        padding: 17px 20px;
+        border-bottom: 1px solid var(--line);
+        white-space: nowrap;
+      }
+
+      th {
+        color: var(--muted);
+        background: var(--surface-soft);
+        font-size: 0.67rem;
+        font-weight: 850;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      td {
+        font-size: 0.84rem;
+      }
+
+      tbody tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .metric-name {
+        font-weight: 800;
+      }
+
+      .validation-value {
+        color: var(--blue-dark);
+        font-family: var(--mono);
+        font-weight: 850;
+      }
+
+      .test-value {
+        color: var(--amber);
+        font-family: var(--mono);
+        font-weight: 850;
+      }
+
+      .delta {
+        color: var(--mint);
+        font-family: var(--mono);
+        font-weight: 800;
+      }
+
+      .delta.negative {
+        color: var(--coral);
+      }
+
+      .comparison-note {
+        margin: 14px 3px 0;
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+
+      .comparison-note strong {
+        color: var(--ink);
+      }
+
+      .config-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 13px;
+      }
+
+      .config-card {
+        padding: 23px;
+        border: 1px solid var(--line);
+        border-radius: 17px;
+        background: var(--surface);
+      }
+
+      .config-card h3 {
+        margin: 0 0 15px;
+        font-size: 0.98rem;
+      }
+
+      .config-list {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px 18px;
+        margin: 0;
+      }
+
+      .config-list dt {
+        color: var(--muted);
+        font-size: 0.75rem;
+      }
+
+      .config-list dd {
+        margin: 0;
+        font-family: var(--mono);
+        font-size: 0.73rem;
+        font-weight: 750;
+        text-align: right;
+      }
+
+      .sources {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 9px;
+        margin-top: 18px;
+      }
+
+      .source-link {
+        display: inline-flex;
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        color: var(--blue-dark);
+        background: var(--surface);
+        font-family: var(--mono);
+        font-size: 0.69rem;
+        font-weight: 720;
+        text-decoration: none;
+      }
+
+      .source-link:hover {
+        border-color: rgba(43, 102, 246, 0.35);
+        background: var(--blue-soft);
+      }
+
+      .footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        padding: 25px 0 38px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 0.74rem;
+      }
+
+      .footer-links {
+        display: flex;
+        gap: 16px;
+      }
+
+      .footer a {
+        text-decoration: none;
+      }
+
+      .footer a:hover {
+        color: var(--blue-dark);
+      }
+
+      @media (max-width: 900px) {
+        .headline-grid,
+        .config-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .section-head {
+          grid-template-columns: 1fr;
+          gap: 14px;
+        }
+
+        .charts {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 700px) {
+        .shell {
+          width: min(100% - 28px, 1180px);
+        }
+
+        .topbar {
+          align-items: flex-start;
+        }
+
+        .nav {
+          flex-direction: column;
+          align-items: flex-end;
+          gap: 5px;
+        }
+
+        .nav a:nth-child(-n + 3) {
+          display: none;
+        }
+
+        .hero {
+          padding: 42px 25px 38px;
+          border-radius: 22px;
+        }
+
+        .headline-grid {
+          grid-template-columns: 1fr 1fr;
+          margin-bottom: 58px;
+        }
+
+        .split-note {
+          grid-template-columns: 1fr;
+        }
+
+        .split-panel + .split-panel {
+          border-top: 1px solid var(--line);
+          border-left: 0;
+        }
+
+        .footer {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+      }
+
+      @media (max-width: 500px) {
+        .headline-grid,
+        .config-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .headline-card {
+          min-height: 0;
+        }
+
+        .chart-card {
+          padding: 19px 14px;
+        }
+
+        th,
+        td {
+          padding: 14px 15px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to results</a>
+
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="index.html" aria-label="Deep RecSys Lab data atlas">
+          <span class="brand-mark" aria-hidden="true">✦</span>
+          <span>Deep RecSys Lab</span>
+        </a>
+        <nav class="nav" aria-label="Primary navigation">
+          <a href="index.html">Data atlas</a>
+          <a href="methodology.html">Methodology</a>
+          <a href="technical.html">Technical guide</a>
+          <a href="api.html">Serving console</a>
+          <a href="results.html" aria-current="page">Run results</a>
+        </nav>
+      </header>
+
+      <main id="main">
+        <section class="hero" aria-labelledby="page-title">
+          <p class="eyebrow">Completed Multi-VAE run · MovieLens 20M</p>
+          <h1 id="page-title">The run, without split ambiguity.</h1>
+          <p class="hero-copy">
+            Two hundred full epochs converged on the project’s paper-scale setup. Validation selected the checkpoint; a separate held-out test evaluation reports its final ranking quality.
+          </p>
+          <span class="run-id">multvae-20260818-224228</span>
+        </section>
+
+        <section class="headline-grid" aria-label="Run headline metrics">
+          <article class="headline-card">
+            <span class="headline-label">Selected validation NDCG@100</span>
+            <strong class="headline-value">0.4262</strong>
+            <span class="headline-detail">Highest saved NDCG@100 · not a test score</span>
+          </article>
+          <article class="headline-card">
+            <span class="headline-label">Best validation epoch</span>
+            <strong class="headline-value">200</strong>
+            <span class="headline-detail">Checkpoint epoch index 199 · step 46,800</span>
+          </article>
+          <article class="headline-card test-card">
+            <span class="headline-label">Held-out test NDCG@100</span>
+            <strong class="headline-value">0.4196</strong>
+            <span class="headline-detail">Separate final evaluation · not used for selection</span>
+          </article>
+          <article class="headline-card">
+            <span class="headline-label">Training coverage</span>
+            <strong class="headline-value">200 / 200</strong>
+            <span class="headline-detail">Full train and validation passes each epoch</span>
+          </article>
+        </section>
+
+        <section class="section" aria-labelledby="split-title">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Evaluation boundary</p>
+              <h2 id="split-title">Validation selected the checkpoint. Test remains held out.</h2>
+            </div>
+            <p class="section-intro">
+              The data configuration reserves 10,000 users for validation and another 10,000 for test. The two saved result sets have different roles and are reported separately.
+            </p>
+          </div>
+          <div class="split-note">
+            <article class="split-panel">
+              <span class="split-tag">Available · validation</span>
+              <h3>Used once per epoch for model selection</h3>
+              <p>
+                <code>best.pt</code> tracks the maximum <code>validation/ndcg@100</code>. At epoch 200 it records NDCG@100 0.4262, Recall@20 0.3979, and Recall@50 0.5374.
+              </p>
+            </article>
+            <article class="split-panel test">
+              <span class="split-tag">Available · held-out test</span>
+              <h3>Evaluated after checkpoint selection</h3>
+              <p>
+                <code>test_metrics.json</code> records NDCG@100 0.4196, Recall@20 0.3944, and Recall@50 0.5389. These values were not used to choose the model.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="curves-title">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Training curves</p>
+              <h2 id="curves-title">Fast early gains, then a long validation climb.</h2>
+            </div>
+            <p class="section-intro">
+              Loss falls sharply in the first 20 epochs. Ranking quality improves more gradually, with the selected validation NDCG@100 arriving on the final epoch.
+            </p>
+          </div>
+          <div class="charts">
+            <article class="chart-card">
+              <h3>Training objective</h3>
+              <p class="chart-subtitle">Per-epoch mean · lower is better</p>
+              <div class="legend" aria-hidden="true">
+                <span><i style="--series-color: #2b66f6"></i>Total loss</span>
+                <span><i style="--series-color: #7558d8"></i>Negative log-likelihood</span>
+              </div>
+              <div class="chart" id="loss-chart"></div>
+              <p class="selection-note">
+                Lowest training loss occurs at epoch 107 (455.9832), but checkpoint selection correctly follows validation NDCG@100 instead of training loss.
+              </p>
+            </article>
+            <article class="chart-card">
+              <h3>Validation ranking quality</h3>
+              <p class="chart-subtitle">10,000 validation users · higher is better</p>
+              <div class="legend" aria-hidden="true">
+                <span><i style="--series-color: #2b66f6"></i>NDCG@100</span>
+                <span><i style="--series-color: #0a987f"></i>Recall@20</span>
+                <span><i style="--series-color: #d9654b"></i>Recall@50</span>
+              </div>
+              <div class="chart" id="ranking-chart"></div>
+              <p class="selection-note">
+                The last record is the selected checkpoint: NDCG@100 0.4262, Recall@20 0.3979, Recall@50 0.5374.
+              </p>
+            </article>
+          </div>
+          <p class="chart-source" id="curve-source" role="status">
+            Loading all 200 records from <code>outputs/multvae-20260818-224228/metrics.jsonl</code>…
+          </p>
+        </section>
+
+        <section class="section" aria-labelledby="comparison-title">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Paper-target context</p>
+              <h2 id="comparison-title">Validation chose. Test gives the final comparison.</h2>
+            </div>
+            <p class="section-intro">
+              Both run splits are shown to prevent leakage in interpretation. The held-out test column—not the higher validation score—is the appropriate paper-target comparison.
+            </p>
+          </div>
+          <div class="comparison">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Metric</th>
+                  <th scope="col">Best validation</th>
+                  <th scope="col">Held-out test</th>
+                  <th scope="col">Paper target</th>
+                  <th scope="col">Test gap</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="metric-name">Recall@20</td>
+                  <td class="validation-value">0.3979</td>
+                  <td class="test-value">0.3944</td>
+                  <td class="mono">0.395</td>
+                  <td class="delta negative">−0.0006</td>
+                </tr>
+                <tr>
+                  <td class="metric-name">Recall@50</td>
+                  <td class="validation-value">0.5374</td>
+                  <td class="test-value">0.5389</td>
+                  <td class="mono">0.537</td>
+                  <td class="delta">+0.0019</td>
+                </tr>
+                <tr>
+                  <td class="metric-name">NDCG@100</td>
+                  <td class="validation-value">0.4262</td>
+                  <td class="test-value">0.4196</td>
+                  <td class="mono">≈ 0.426</td>
+                  <td class="delta negative">≈ −0.0064</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="comparison-note">
+            <strong>Interpretation:</strong> held-out Recall@20 is 0.0006 below the target and Recall@50 is 0.0019 above it; held-out NDCG@100 trails the approximate target by 0.0064. The validation score is checkpoint-selection evidence, not the headline reproduction result.
+          </p>
+        </section>
+
+        <section class="section" aria-labelledby="config-title">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Resolved run configuration</p>
+              <h2 id="config-title">Paper-scale model, full validation passes.</h2>
+            </div>
+            <p class="section-intro">
+              Values below come from the resolved config, environment record, and selected checkpoint metadata saved with this run.
+            </p>
+          </div>
+          <div class="config-grid">
+            <article class="config-card">
+              <h3>Model</h3>
+              <dl class="config-list">
+                <dt>Architecture</dt><dd>600 → 200 → 600</dd>
+                <dt>Latent dimension</dt><dd>200</dd>
+                <dt>Items</dt><dd>20,108</dd>
+                <dt>Dropout</dt><dd>0.5</dd>
+                <dt>Input norm</dt><dd>L2</dd>
+              </dl>
+            </article>
+            <article class="config-card">
+              <h3>Optimization</h3>
+              <dl class="config-list">
+                <dt>Epochs / batch</dt><dd>200 / 500</dd>
+                <dt>Learning rate</dt><dd>0.001</dd>
+                <dt>Anneal steps</dt><dd>200,000</dd>
+                <dt>β cap / final</dt><dd>0.2 / 0.0468</dd>
+                <dt>Precision</dt><dd>fp32</dd>
+              </dl>
+            </article>
+            <article class="config-card">
+              <h3>Evaluation & runtime</h3>
+              <dl class="config-list">
+                <dt>Ranking cutoffs</dt><dd>20, 50, 100</dd>
+                <dt>Seen items</dt><dd>masked</dd>
+                <dt>Eval bounds</dt><dd>none</dd>
+                <dt>Device</dt><dd>Apple MPS</dd>
+                <dt>Seed</dt><dd>98765</dd>
+              </dl>
+            </article>
+          </div>
+          <div class="sources" aria-label="Run source artifacts">
+            <a class="source-link" href="outputs/multvae-20260818-224228/metrics.jsonl">metrics.jsonl</a>
+            <a class="source-link" href="outputs/multvae-20260818-224228/test_metrics.json">test_metrics.json</a>
+            <a class="source-link" href="outputs/multvae-20260818-224228/resolved_config.json">resolved_config.json</a>
+            <a class="source-link" href="outputs/multvae-20260818-224228/environment.json">environment.json</a>
+            <a class="source-link" href="README.md">paper targets in README</a>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span>Deep RecSys Lab · run result recorded from local artifacts</span>
+        <div class="footer-links">
+          <a href="methodology.html">Methodology</a>
+          <a href="api.html">Serving console</a>
+          <a href="#main">Back to top ↑</a>
+        </div>
+      </footer>
+    </div>
+
+    <script>
+      (() => {
+        const runMetricsPath = "outputs/multvae-20260818-224228/metrics.jsonl";
+        const fallbackRows = [{"epoch":0,"train/loss":574.31416,"train/nll":574.20706,"validation/ndcg@100":0.193068,"validation/recall@20":0.163763,"validation/recall@50":0.236136},{"epoch":10,"train/loss":477.192284,"train/nll":476.265612,"validation/ndcg@100":0.408071,"validation/recall@20":0.381675,"validation/recall@50":0.521972},{"epoch":20,"train/loss":466.244164,"train/nll":464.517444,"validation/ndcg@100":0.413121,"validation/recall@20":0.38638,"validation/recall@50":0.52888},{"epoch":30,"train/loss":462.070722,"train/nll":459.670998,"validation/ndcg@100":0.414429,"validation/recall@20":0.390095,"validation/recall@50":0.530638},{"epoch":40,"train/loss":459.345268,"train/nll":456.373907,"validation/ndcg@100":0.417008,"validation/recall@20":0.391912,"validation/recall@50":0.533645},{"epoch":50,"train/loss":458.245993,"train/nll":454.797202,"validation/ndcg@100":0.418278,"validation/recall@20":0.392969,"validation/recall@50":0.533798},{"epoch":60,"train/loss":457.344763,"train/nll":453.485854,"validation/ndcg@100":0.418093,"validation/recall@20":0.392401,"validation/recall@50":0.532806},{"epoch":70,"train/loss":456.930407,"train/nll":452.721615,"validation/ndcg@100":0.419752,"validation/recall@20":0.394144,"validation/recall@50":0.53387},{"epoch":80,"train/loss":456.230788,"train/nll":451.68879,"validation/ndcg@100":0.420756,"validation/recall@20":0.393108,"validation/recall@50":0.534489},{"epoch":90,"train/loss":456.411068,"train/nll":451.561152,"validation/ndcg@100":0.420208,"validation/recall@20":0.393293,"validation/recall@50":0.535141},{"epoch":100,"train/loss":456.334563,"train/nll":451.190223,"validation/ndcg@100":0.42196,"validation/recall@20":0.396355,"validation/recall@50":0.535414},{"epoch":110,"train/loss":456.264667,"train/nll":450.834959,"validation/ndcg@100":0.420921,"validation/recall@20":0.393529,"validation/recall@50":0.532379},{"epoch":120,"train/loss":456.643155,"train/nll":450.942241,"validation/ndcg@100":0.421807,"validation/recall@20":0.395441,"validation/recall@50":0.534527},{"epoch":130,"train/loss":456.444116,"train/nll":450.488508,"validation/ndcg@100":0.422013,"validation/recall@20":0.395436,"validation/recall@50":0.535713},{"epoch":140,"train/loss":456.34845,"train/nll":450.150227,"validation/ndcg@100":0.422309,"validation/recall@20":0.397145,"validation/recall@50":0.53659},{"epoch":150,"train/loss":456.577357,"train/nll":450.146858,"validation/ndcg@100":0.423896,"validation/recall@20":0.39619,"validation/recall@50":0.536441},{"epoch":160,"train/loss":456.730311,"train/nll":450.073424,"validation/ndcg@100":0.424869,"validation/recall@20":0.39748,"validation/recall@50":0.535714},{"epoch":170,"train/loss":456.9836,"train/nll":450.114439,"validation/ndcg@100":0.423059,"validation/recall@20":0.395337,"validation/recall@50":0.535352},{"epoch":180,"train/loss":457.347754,"train/nll":450.262259,"validation/ndcg@100":0.425058,"validation/recall@20":0.397852,"validation/recall@50":0.536711},{"epoch":190,"train/loss":457.214659,"train/nll":449.935652,"validation/ndcg@100":0.423573,"validation/recall@20":0.397207,"validation/recall@50":0.537083},{"epoch":199,"train/loss":457.424124,"train/nll":449.957772,"validation/ndcg@100":0.426219,"validation/recall@20":0.397851,"validation/recall@50":0.537438}];
+        const svgNamespace = "http://www.w3.org/2000/svg";
+
+        const addSvg = (parent, name, attributes = {}, text = "") => {
+          const element = document.createElementNS(svgNamespace, name);
+          Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, String(value)));
+          if (text) element.textContent = text;
+          parent.appendChild(element);
+          return element;
+        };
+
+        const renderChart = (targetId, rows, series, options) => {
+          const target = document.getElementById(targetId);
+          target.replaceChildren();
+          const width = 760;
+          const height = 290;
+          const padding = { top: 18, right: 20, bottom: 40, left: 58 };
+          const plotWidth = width - padding.left - padding.right;
+          const plotHeight = height - padding.top - padding.bottom;
+          const firstEpoch = rows[0].epoch;
+          const lastEpoch = rows[rows.length - 1].epoch;
+          const x = (epoch) => padding.left + ((epoch - firstEpoch) / (lastEpoch - firstEpoch)) * plotWidth;
+          const y = (value) => padding.top + ((options.max - value) / (options.max - options.min)) * plotHeight;
+          const svg = addSvg(target, "svg", {
+            viewBox: `0 0 ${width} ${height}`,
+            role: "img",
+            "aria-label": options.label,
+          });
+          addSvg(svg, "title", {}, options.label);
+
+          for (let index = 0; index <= 4; index += 1) {
+            const value = options.min + ((options.max - options.min) * index) / 4;
+            const position = y(value);
+            addSvg(svg, "line", {
+              x1: padding.left,
+              y1: position,
+              x2: width - padding.right,
+              y2: position,
+              class: "chart-grid",
+            });
+            addSvg(svg, "text", {
+              x: padding.left - 10,
+              y: position + 3,
+              "text-anchor": "end",
+              class: "chart-label",
+            }, options.format(value));
+          }
+
+          [0, 50, 100, 150, 200].forEach((humanEpoch) => {
+            const storedEpoch = Math.min(lastEpoch, Math.max(firstEpoch, humanEpoch - 1));
+            const position = x(storedEpoch);
+            addSvg(svg, "line", {
+              x1: position,
+              y1: padding.top,
+              x2: position,
+              y2: height - padding.bottom,
+              class: "chart-grid",
+            });
+            addSvg(svg, "text", {
+              x: position,
+              y: height - 17,
+              "text-anchor": "middle",
+              class: "chart-label",
+            }, humanEpoch === 0 ? "1" : String(humanEpoch));
+          });
+
+          series.forEach((item) => {
+            const points = rows.map((row) => `${x(row.epoch).toFixed(2)},${y(row[item.key]).toFixed(2)}`);
+            addSvg(svg, "polyline", {
+              points: points.join(" "),
+              fill: "none",
+              stroke: item.color,
+              "stroke-width": 2.6,
+              "stroke-linecap": "round",
+              "stroke-linejoin": "round",
+              "vector-effect": "non-scaling-stroke",
+            });
+            const finalRow = rows[rows.length - 1];
+            addSvg(svg, "circle", {
+              cx: x(finalRow.epoch),
+              cy: y(finalRow[item.key]),
+              r: 4,
+              fill: "#ffffff",
+              stroke: item.color,
+              "stroke-width": 2.5,
+              "vector-effect": "non-scaling-stroke",
+            });
+          });
+
+          addSvg(svg, "text", {
+            x: padding.left + plotWidth / 2,
+            y: height - 2,
+            "text-anchor": "middle",
+            class: "chart-axis-title",
+          }, "Training epoch");
+        };
+
+        const draw = (rows) => {
+          renderChart("loss-chart", rows, [
+            { key: "train/loss", color: "#2b66f6" },
+            { key: "train/nll", color: "#7558d8" },
+          ], {
+            min: 440,
+            max: 580,
+            format: (value) => value.toFixed(0),
+            label: "Training loss and negative log-likelihood across 200 epochs",
+          });
+          renderChart("ranking-chart", rows, [
+            { key: "validation/ndcg@100", color: "#2b66f6" },
+            { key: "validation/recall@20", color: "#0a987f" },
+            { key: "validation/recall@50", color: "#d9654b" },
+          ], {
+            min: 0.15,
+            max: 0.56,
+            format: (value) => value.toFixed(2),
+            label: "Validation NDCG at 100, Recall at 20, and Recall at 50 across 200 epochs",
+          });
+        };
+
+        draw(fallbackRows);
+        fetch(runMetricsPath)
+          .then((response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.text();
+          })
+          .then((text) => text.split("\n").filter(Boolean).map((line) => JSON.parse(line)))
+          .then((rows) => {
+            if (rows.length !== 200) throw new Error(`expected 200 records, received ${rows.length}`);
+            draw(rows);
+            document.getElementById("curve-source").innerHTML =
+              `Curves rendered from all <strong>${rows.length}</strong> saved records in <code>${runMetricsPath}</code>.`;
+          })
+          .catch(() => {
+            document.getElementById("curve-source").innerHTML =
+              `Curves use a 21-point embedded trace derived from <code>${runMetricsPath}</code>; serve this page beside the run artifacts to load all 200 records.`;
+          });
+      })();
+    </script>
+  </body>
+</html>

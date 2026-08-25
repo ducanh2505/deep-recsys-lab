@@ -1,0 +1,14 @@
+epochs: 200
+batch_size: 500
+learning_rate: 0.001
+weight_decay: 0.0
+beta_cap: 0.2
+total_anneal_steps: 200000
+validation_every: 1
+num_workers: 0
+gradient_clip_norm: null
+max_train_batches: null
+max_eval_batches: null
+precision: fp32
+resume_from: null
+save_every_epoch: true

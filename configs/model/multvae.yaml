@@ -1,0 +1,6 @@
+name: multvae
+n_items: null
+hidden_dims: [600, 200, 600]
+latent_dim: 200
+dropout: 0.5
+input_normalization: l2

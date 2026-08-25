@@ -1,0 +1,37 @@
+.git
+.github
+.venv
+__pycache__
+*.py[cod]
+*.egg-info
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Local data, training outputs, and model stores are mounted or generated separately.
+data
+outputs
+artifacts
+bundles
+.bentoml
+bentos
+.ci-smoke
+ci-smoke
+*.pt
+*.pth
+*.npz
+*.npy
+*.tfevents.*
+
+# Files that are not needed by either runtime image.
+configs
+docs
+notebooks
+tests
+methodology.html
+results.html
+technical.html
+index.html
+uv.lock

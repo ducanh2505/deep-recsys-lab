@@ -1,0 +1,2085 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="A bilingual English and Vietnamese guide to the current Deep RecSys Lab methodology: approach, data, Multi-VAE model, training, inference, and configuration."
+    />
+    <title>Methodology · Deep RecSys Lab</title>
+    <style>
+      :root {
+        --ink: #182033;
+        --muted: #69738a;
+        --soft: #8f98aa;
+        --line: #e2e6ec;
+        --paper: #fbfaf7;
+        --surface: #ffffff;
+        --surface-warm: #f4f0e8;
+        --navy: #14243d;
+        --navy-soft: #1d3457;
+        --blue: #2b66f6;
+        --blue-soft: #edf3ff;
+        --orange: #e97845;
+        --orange-soft: #fff0e8;
+        --mint: #159b82;
+        --mint-soft: #e9f7f3;
+        --violet: #7558d8;
+        --shadow: 0 22px 65px rgba(31, 45, 72, 0.1);
+        --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+        scroll-padding-top: 96px;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 92% 2%, rgba(43, 102, 246, 0.12), transparent 27rem),
+          linear-gradient(180deg, #f7f5ef 0, var(--paper) 31rem, #ffffff 58rem);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.55;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      code,
+      pre,
+      .mono {
+        font-family: var(--mono);
+      }
+
+      .skip-link {
+        position: fixed;
+        top: 10px;
+        left: 10px;
+        z-index: 100;
+        padding: 9px 12px;
+        border-radius: 8px;
+        color: #ffffff;
+        background: var(--navy);
+        transform: translateY(-150%);
+      }
+
+      .skip-link:focus {
+        transform: translateY(0);
+      }
+
+      .shell {
+        width: min(1220px, calc(100% - 40px));
+        margin: 0 auto;
+      }
+
+      .topbar {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        align-items: center;
+        gap: 30px;
+        padding: 22px 0;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 11px;
+        width: max-content;
+        font-size: 0.77rem;
+        font-weight: 850;
+        letter-spacing: 0.12em;
+        text-decoration: none;
+        text-transform: uppercase;
+      }
+
+      .brand-mark {
+        display: grid;
+        width: 31px;
+        height: 31px;
+        place-items: center;
+        border-radius: 10px;
+        color: #ffffff;
+        background: var(--blue);
+        box-shadow: 0 7px 16px rgba(43, 102, 246, 0.25);
+        font-size: 0.95rem;
+        letter-spacing: 0;
+      }
+
+      .site-nav {
+        display: flex;
+        justify-content: center;
+        gap: 22px;
+      }
+
+      .site-nav a {
+        color: var(--muted);
+        font-size: 0.76rem;
+        font-weight: 750;
+        text-decoration: none;
+      }
+
+      .site-nav a:hover,
+      .site-nav a[aria-current="page"] {
+        color: var(--blue);
+      }
+
+      .language-switch {
+        display: inline-flex;
+        padding: 3px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: rgba(255, 255, 255, 0.7);
+      }
+
+      .language-switch button {
+        min-width: 42px;
+        border: 0;
+        border-radius: 8px;
+        padding: 7px 9px;
+        color: var(--muted);
+        background: transparent;
+        cursor: pointer;
+        font-size: 0.7rem;
+        font-weight: 850;
+        letter-spacing: 0.08em;
+      }
+
+      .language-switch button[aria-pressed="true"] {
+        color: #ffffff;
+        background: var(--navy);
+        box-shadow: 0 5px 13px rgba(20, 36, 61, 0.18);
+      }
+
+      :focus-visible {
+        outline: 3px solid rgba(43, 102, 246, 0.35);
+        outline-offset: 3px;
+      }
+
+      .hero {
+        position: relative;
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(350px, 0.8fr);
+        gap: 66px;
+        align-items: center;
+        min-height: 590px;
+        overflow: hidden;
+        margin: 12px 0 22px;
+        padding: 68px 64px;
+        border-radius: 28px;
+        color: #ffffff;
+        background:
+          radial-gradient(circle at 82% 12%, rgba(89, 138, 255, 0.33), transparent 22rem),
+          linear-gradient(135deg, var(--navy) 0%, var(--navy-soft) 100%);
+        box-shadow: var(--shadow);
+      }
+
+      .hero::before {
+        position: absolute;
+        right: -120px;
+        bottom: -220px;
+        width: 480px;
+        height: 480px;
+        border: 1px solid rgba(255, 255, 255, 0.11);
+        border-radius: 50%;
+        box-shadow:
+          0 0 0 38px rgba(255, 255, 255, 0.025),
+          0 0 0 76px rgba(255, 255, 255, 0.02);
+        content: "";
+      }
+
+      .hero-copy-wrap,
+      .method-card {
+        position: relative;
+        z-index: 1;
+      }
+
+      .eyebrow,
+      .section-kicker {
+        margin: 0 0 14px;
+        color: #88adff;
+        font-size: 0.7rem;
+        font-weight: 850;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      .hero h1 {
+        max-width: 720px;
+        margin: 0 0 22px;
+        font-size: clamp(3rem, 6.7vw, 6rem);
+        font-weight: 820;
+        letter-spacing: -0.078em;
+        line-height: 0.92;
+      }
+
+      .hero-lead {
+        max-width: 690px;
+        margin: 0;
+        color: #c7d3e7;
+        font-size: 1.02rem;
+      }
+
+      .hero-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 29px;
+      }
+
+      .hero-chip {
+        padding: 7px 10px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 999px;
+        color: #eef4ff;
+        background: rgba(255, 255, 255, 0.065);
+        font-family: var(--mono);
+        font-size: 0.68rem;
+        font-weight: 700;
+      }
+
+      .method-card {
+        padding: 21px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 22px;
+        background: rgba(9, 20, 38, 0.32);
+        backdrop-filter: blur(12px);
+      }
+
+      .method-card-label {
+        margin: 0 0 16px;
+        color: #9eafc7;
+        font-size: 0.67rem;
+        font-weight: 850;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      .method-flow {
+        display: grid;
+        gap: 8px;
+      }
+
+      .method-node {
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 11px;
+        padding: 12px;
+        border-radius: 13px;
+        color: #e8effb;
+        background: rgba(255, 255, 255, 0.07);
+      }
+
+      .method-node-index {
+        display: grid;
+        width: 30px;
+        height: 30px;
+        place-items: center;
+        border-radius: 9px;
+        color: #ffffff;
+        background: rgba(43, 102, 246, 0.78);
+        font-family: var(--mono);
+        font-size: 0.64rem;
+        font-weight: 800;
+      }
+
+      .method-node strong,
+      .method-node span {
+        display: block;
+      }
+
+      .method-node strong {
+        font-size: 0.82rem;
+      }
+
+      .method-node span {
+        color: #aebed4;
+        font-size: 0.69rem;
+      }
+
+      .method-node-arrow {
+        color: #7da5fb;
+        font-size: 1rem;
+        font-weight: 800;
+      }
+
+      .method-node:last-child .method-node-arrow {
+        visibility: hidden;
+      }
+
+      .section-nav-wrap {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        padding: 10px 0;
+        background: rgba(251, 250, 247, 0.84);
+        backdrop-filter: blur(16px);
+      }
+
+      .section-nav {
+        display: flex;
+        gap: 4px;
+        overflow-x: auto;
+        padding: 5px;
+        border: 1px solid rgba(226, 230, 236, 0.86);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.72);
+        scrollbar-width: none;
+      }
+
+      .section-nav::-webkit-scrollbar {
+        display: none;
+      }
+
+      .section-nav a {
+        flex: 1 0 auto;
+        padding: 9px 12px;
+        border-radius: 9px;
+        color: var(--muted);
+        font-size: 0.71rem;
+        font-weight: 780;
+        text-align: center;
+        text-decoration: none;
+      }
+
+      .section-nav a:hover,
+      .section-nav a.is-active {
+        color: var(--blue);
+        background: var(--blue-soft);
+      }
+
+      .section {
+        padding: 104px 0 4px;
+        scroll-margin-top: 8px;
+      }
+
+      .section-head {
+        display: grid;
+        grid-template-columns: minmax(0, 0.9fr) minmax(320px, 0.55fr);
+        gap: 80px;
+        align-items: end;
+        margin-bottom: 36px;
+      }
+
+      .section-kicker {
+        color: var(--blue);
+      }
+
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h2 {
+        max-width: 760px;
+        margin-bottom: 0;
+        font-size: clamp(2.1rem, 4.5vw, 4.1rem);
+        font-weight: 810;
+        letter-spacing: -0.068em;
+        line-height: 0.98;
+      }
+
+      .section-intro {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.93rem;
+      }
+
+      .approach-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .concept-card,
+      .data-card,
+      .training-card,
+      .config-card {
+        border: 1px solid var(--line);
+        border-radius: 19px;
+        background: var(--surface);
+        box-shadow: 0 10px 28px rgba(31, 45, 72, 0.045);
+      }
+
+      .concept-card {
+        min-height: 254px;
+        padding: 25px;
+      }
+
+      .concept-icon {
+        display: grid;
+        width: 40px;
+        height: 40px;
+        margin-bottom: 32px;
+        place-items: center;
+        border-radius: 12px;
+        color: var(--blue);
+        background: var(--blue-soft);
+        font-family: var(--mono);
+        font-size: 0.75rem;
+        font-weight: 850;
+      }
+
+      .concept-card:nth-child(2) .concept-icon {
+        color: var(--orange);
+        background: var(--orange-soft);
+      }
+
+      .concept-card:nth-child(3) .concept-icon {
+        color: var(--mint);
+        background: var(--mint-soft);
+      }
+
+      .concept-card h3 {
+        margin-bottom: 9px;
+        font-size: 1.03rem;
+        letter-spacing: -0.03em;
+      }
+
+      .concept-card p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      .principle {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 18px;
+        align-items: start;
+        margin-top: 18px;
+        padding: 22px 24px;
+        border: 1px solid #cfe0ff;
+        border-radius: 17px;
+        background: #f2f6ff;
+      }
+
+      .principle-mark {
+        display: grid;
+        width: 28px;
+        height: 28px;
+        place-items: center;
+        border-radius: 50%;
+        color: #ffffff;
+        background: var(--blue);
+        font-size: 0.75rem;
+        font-weight: 850;
+      }
+
+      .principle strong,
+      .principle span {
+        display: block;
+      }
+
+      .principle strong {
+        margin-bottom: 3px;
+        font-size: 0.83rem;
+      }
+
+      .principle span {
+        color: #52677f;
+        font-size: 0.79rem;
+      }
+
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 11px;
+        margin-bottom: 17px;
+      }
+
+      .stat {
+        position: relative;
+        min-height: 148px;
+        overflow: hidden;
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: 17px;
+        background: var(--surface);
+      }
+
+      .stat::after {
+        position: absolute;
+        right: -35px;
+        bottom: -45px;
+        width: 110px;
+        height: 110px;
+        border: 1px solid currentColor;
+        border-radius: 50%;
+        opacity: 0.1;
+        content: "";
+      }
+
+      .stat:nth-child(1) { color: var(--blue); }
+      .stat:nth-child(2) { color: var(--mint); }
+      .stat:nth-child(3) { color: var(--orange); }
+      .stat:nth-child(4) { color: var(--violet); }
+
+      .stat-label,
+      .stat-value,
+      .stat-note {
+        display: block;
+      }
+
+      .stat-label {
+        color: var(--muted);
+        font-size: 0.67rem;
+        font-weight: 820;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .stat-value {
+        margin: 17px 0 7px;
+        color: var(--ink);
+        font-size: clamp(1.7rem, 3vw, 2.3rem);
+        font-weight: 820;
+        letter-spacing: -0.06em;
+        line-height: 1;
+      }
+
+      .stat-note {
+        color: var(--muted);
+        font-size: 0.69rem;
+      }
+
+      .data-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.04fr) minmax(340px, 0.72fr);
+        gap: 16px;
+      }
+
+      .data-card {
+        padding: 25px;
+      }
+
+      .card-eyebrow {
+        margin: 0 0 8px;
+        color: var(--soft);
+        font-family: var(--mono);
+        font-size: 0.66rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .data-card h3,
+      .training-card h3,
+      .config-card h3 {
+        margin-bottom: 8px;
+        font-size: 1.05rem;
+        letter-spacing: -0.03em;
+      }
+
+      .card-copy {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+
+      .split-bars {
+        display: grid;
+        gap: 13px;
+        margin-top: 26px;
+      }
+
+      .split-row {
+        display: grid;
+        grid-template-columns: 100px minmax(0, 1fr) 82px;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .split-label,
+      .split-value {
+        font-size: 0.69rem;
+        font-weight: 800;
+      }
+
+      .split-value {
+        color: var(--muted);
+        font-family: var(--mono);
+        text-align: right;
+      }
+
+      .bar-track {
+        height: 9px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #edf0f4;
+      }
+
+      .bar-fill {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--blue);
+      }
+
+      .split-row:nth-child(2) .bar-fill { background: var(--orange); }
+      .split-row:nth-child(3) .bar-fill { background: var(--mint); }
+
+      .rule-list {
+        display: grid;
+        gap: 0;
+        margin: 17px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .rule-list li {
+        display: grid;
+        grid-template-columns: 27px minmax(0, 1fr);
+        gap: 10px;
+        padding: 11px 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .rule-list li:last-child {
+        border-bottom: 0;
+        padding-bottom: 0;
+      }
+
+      .rule-number {
+        color: var(--blue);
+        font-family: var(--mono);
+        font-size: 0.67rem;
+        font-weight: 850;
+      }
+
+      .rule-list strong,
+      .rule-list span {
+        display: block;
+      }
+
+      .rule-list strong {
+        margin-bottom: 2px;
+        font-size: 0.75rem;
+      }
+
+      .rule-list span {
+        color: var(--muted);
+        font-size: 0.72rem;
+      }
+
+      .architecture {
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        border-radius: 23px;
+        color: #ffffff;
+        background:
+          radial-gradient(circle at 88% 10%, rgba(43, 102, 246, 0.28), transparent 19rem),
+          var(--navy);
+        box-shadow: var(--shadow);
+      }
+
+      .architecture-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 28px 29px 0;
+      }
+
+      .architecture-head h3 {
+        margin: 0 0 5px;
+        font-size: 1.1rem;
+        letter-spacing: -0.03em;
+      }
+
+      .architecture-head p {
+        margin: 0;
+        color: #9dafc8;
+        font-size: 0.75rem;
+      }
+
+      .architecture-tag {
+        flex: none;
+        padding: 6px 9px;
+        border: 1px solid rgba(255, 255, 255, 0.13);
+        border-radius: 8px;
+        color: #c8d6ea;
+        font-family: var(--mono);
+        font-size: 0.66rem;
+        font-weight: 750;
+      }
+
+      .architecture-flow {
+        display: grid;
+        grid-template-columns: repeat(7, minmax(76px, 1fr));
+        align-items: center;
+        gap: 10px;
+        overflow-x: auto;
+        padding: 36px 29px 33px;
+      }
+
+      .layer {
+        position: relative;
+        display: grid;
+        min-width: 76px;
+        min-height: 106px;
+        place-items: center;
+        padding: 13px 9px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 15px;
+        background: rgba(255, 255, 255, 0.06);
+        text-align: center;
+      }
+
+      .layer:not(:last-child)::after {
+        position: absolute;
+        top: 50%;
+        right: -16px;
+        color: #638bdc;
+        content: "→";
+        font-size: 0.9rem;
+        font-weight: 850;
+        transform: translateY(-50%);
+      }
+
+      .layer.accent {
+        border-color: rgba(83, 132, 246, 0.55);
+        background: rgba(43, 102, 246, 0.2);
+      }
+
+      .layer.latent {
+        border-color: rgba(234, 120, 69, 0.55);
+        background: rgba(233, 120, 69, 0.16);
+      }
+
+      .layer strong,
+      .layer span {
+        display: block;
+      }
+
+      .layer strong {
+        margin-bottom: 7px;
+        font-family: var(--mono);
+        font-size: 0.78rem;
+      }
+
+      .layer span {
+        color: #aebdd2;
+        font-size: 0.63rem;
+      }
+
+      .model-notes {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .model-note {
+        padding: 22px 25px;
+        background: rgba(13, 28, 49, 0.96);
+      }
+
+      .model-note strong,
+      .model-note span {
+        display: block;
+      }
+
+      .model-note strong {
+        margin-bottom: 4px;
+        font-size: 0.78rem;
+      }
+
+      .model-note span {
+        color: #9dafc8;
+        font-size: 0.7rem;
+      }
+
+      .objective {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 30px;
+        align-items: center;
+        margin-top: 15px;
+        padding: 22px 25px;
+        border: 1px solid var(--line);
+        border-radius: 17px;
+        background: var(--surface);
+      }
+
+      .objective strong,
+      .objective span {
+        display: block;
+      }
+
+      .objective strong {
+        margin-bottom: 4px;
+        font-size: 0.8rem;
+      }
+
+      .objective span {
+        color: var(--muted);
+        font-size: 0.76rem;
+      }
+
+      .formula {
+        color: var(--navy);
+        font-family: Georgia, "Times New Roman", serif;
+        font-size: 1.15rem;
+        font-style: italic;
+        white-space: nowrap;
+      }
+
+      .training-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.72fr);
+        gap: 16px;
+      }
+
+      .training-card {
+        padding: 25px;
+      }
+
+      .training-steps {
+        display: grid;
+        gap: 0;
+        margin-top: 22px;
+      }
+
+      .training-step {
+        position: relative;
+        display: grid;
+        grid-template-columns: 42px minmax(0, 1fr);
+        gap: 13px;
+        padding-bottom: 21px;
+      }
+
+      .training-step:last-child {
+        padding-bottom: 0;
+      }
+
+      .training-step:not(:last-child)::before {
+        position: absolute;
+        top: 36px;
+        bottom: 2px;
+        left: 18px;
+        width: 1px;
+        background: var(--line);
+        content: "";
+      }
+
+      .step-dot {
+        display: grid;
+        width: 36px;
+        height: 36px;
+        place-items: center;
+        border: 1px solid #cedcff;
+        border-radius: 11px;
+        color: var(--blue);
+        background: var(--blue-soft);
+        font-family: var(--mono);
+        font-size: 0.66rem;
+        font-weight: 850;
+      }
+
+      .training-step strong,
+      .training-step span {
+        display: block;
+      }
+
+      .training-step strong {
+        margin: 2px 0 3px;
+        font-size: 0.78rem;
+      }
+
+      .training-step span {
+        color: var(--muted);
+        font-size: 0.72rem;
+      }
+
+      .parameter-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 9px;
+        margin-top: 21px;
+      }
+
+      .parameter {
+        padding: 13px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: #fafbfc;
+      }
+
+      .parameter span,
+      .parameter strong {
+        display: block;
+      }
+
+      .parameter span {
+        margin-bottom: 5px;
+        color: var(--soft);
+        font-size: 0.62rem;
+        font-weight: 780;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+
+      .parameter strong {
+        font-family: var(--mono);
+        font-size: 0.77rem;
+      }
+
+      .status-box {
+        margin-top: 13px;
+        padding: 16px;
+        border: 1px solid #f2d4c3;
+        border-radius: 13px;
+        background: #fff7f2;
+      }
+
+      .status-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 7px;
+        color: #9d4e2a;
+        font-size: 0.72rem;
+        font-weight: 850;
+      }
+
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--orange);
+        box-shadow: 0 0 0 4px rgba(233, 120, 69, 0.12);
+      }
+
+      .status-box p {
+        margin: 0;
+        color: #765a4c;
+        font-size: 0.71rem;
+      }
+
+      .metric-targets {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 15px;
+      }
+
+      .metric-target {
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: #fafbfc;
+      }
+
+      .metric-target strong,
+      .metric-target span {
+        display: block;
+      }
+
+      .metric-target strong {
+        font-family: var(--mono);
+        font-size: 0.86rem;
+      }
+
+      .metric-target span {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 0.6rem;
+      }
+
+      .inference-flow {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .inference-step {
+        position: relative;
+        min-height: 178px;
+        padding: 18px 16px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--surface);
+      }
+
+      .inference-step:not(:last-child)::after {
+        position: absolute;
+        top: 31px;
+        right: -16px;
+        z-index: 2;
+        color: #98a5b8;
+        content: "→";
+        font-weight: 850;
+      }
+
+      .inference-index {
+        display: inline-block;
+        margin-bottom: 28px;
+        color: var(--blue);
+        font-family: var(--mono);
+        font-size: 0.66rem;
+        font-weight: 850;
+      }
+
+      .inference-step h3 {
+        margin-bottom: 6px;
+        font-size: 0.83rem;
+        letter-spacing: -0.02em;
+      }
+
+      .inference-step p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.68rem;
+      }
+
+      .model-snapshot {
+        margin-top: 16px;
+        padding: 25px;
+        border: 1px solid var(--line);
+        border-radius: 19px;
+        background: var(--surface);
+        box-shadow: 0 10px 28px rgba(31, 45, 72, 0.045);
+      }
+
+      .model-snapshot-head {
+        display: grid;
+        grid-template-columns: minmax(0, 0.9fr) minmax(320px, 1.1fr);
+        gap: 42px;
+        align-items: end;
+      }
+
+      .model-snapshot-head h3 {
+        margin-bottom: 0;
+        font-size: 1.14rem;
+        letter-spacing: -0.035em;
+      }
+
+      .model-snapshot-copy {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.76rem;
+      }
+
+      .model-facts {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+        margin: 19px 0 12px;
+      }
+
+      .model-fact {
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        background: #fafbfc;
+      }
+
+      .model-fact span,
+      .model-fact strong {
+        display: block;
+      }
+
+      .model-fact span {
+        margin-bottom: 3px;
+        color: var(--soft);
+        font-size: 0.59rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .model-fact strong {
+        overflow: hidden;
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .model-value-card .code-block {
+        line-height: 1.67;
+      }
+
+      .code-type { color: #d2a8ff; }
+
+      .model-value-note {
+        margin: 12px 2px 0;
+        color: var(--soft);
+        font-size: 0.68rem;
+      }
+
+      .inference-contract {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 15px;
+        margin-top: 16px;
+      }
+
+      .contract-panel {
+        padding: 23px;
+        border-radius: 17px;
+      }
+
+      .contract-panel.request {
+        border: 1px solid #cddcff;
+        background: var(--blue-soft);
+      }
+
+      .contract-panel.response {
+        border: 1px solid #ccebe3;
+        background: var(--mint-soft);
+      }
+
+      .contract-panel h3 {
+        margin-bottom: 7px;
+        font-size: 0.94rem;
+      }
+
+      .contract-panel p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.75rem;
+      }
+
+      .contract-code {
+        display: block;
+        margin-top: 15px;
+        overflow-x: auto;
+        color: var(--navy);
+        font-family: var(--mono);
+        font-size: 0.68rem;
+        white-space: nowrap;
+      }
+
+      .warning {
+        display: flex;
+        gap: 11px;
+        align-items: flex-start;
+        margin-top: 15px;
+        padding: 15px 17px;
+        border: 1px solid #efd7b4;
+        border-radius: 13px;
+        color: #6e5a3e;
+        background: #fff9ed;
+        font-size: 0.75rem;
+      }
+
+      .warning-mark {
+        flex: none;
+        color: #b47719;
+        font-weight: 900;
+      }
+
+      .config-layout {
+        display: grid;
+        grid-template-columns: minmax(350px, 0.68fr) minmax(0, 1fr);
+        gap: 16px;
+      }
+
+      .config-card {
+        padding: 25px;
+      }
+
+      .config-groups {
+        display: grid;
+        gap: 9px;
+        margin-top: 21px;
+      }
+
+      .config-group {
+        display: grid;
+        grid-template-columns: 82px minmax(0, 1fr);
+        gap: 11px;
+        align-items: start;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .config-group:last-child {
+        border-bottom: 0;
+      }
+
+      .config-group code {
+        color: var(--blue);
+        font-size: 0.69rem;
+        font-weight: 800;
+      }
+
+      .config-group span {
+        color: var(--muted);
+        font-size: 0.71rem;
+      }
+
+      .code-card {
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 19px;
+        background: #111b2c;
+        box-shadow: 0 15px 42px rgba(17, 27, 44, 0.16);
+      }
+
+      .code-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 17px;
+        color: #94a4bc;
+        background: #19263a;
+        font-family: var(--mono);
+        font-size: 0.66rem;
+        font-weight: 700;
+      }
+
+      .window-dots {
+        display: flex;
+        gap: 5px;
+      }
+
+      .window-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #3a4a62;
+      }
+
+      .window-dot:first-child { background: #e97845; }
+      .window-dot:nth-child(2) { background: #d6a545; }
+      .window-dot:nth-child(3) { background: #159b82; }
+
+      .code-block {
+        margin: 0;
+        overflow-x: auto;
+        padding: 22px;
+        color: #e1e9f5;
+        font-size: 0.7rem;
+        line-height: 1.75;
+        tab-size: 2;
+        white-space: pre;
+      }
+
+      .code-key { color: #8cb2ff; }
+      .code-string { color: #a7dfb1; }
+      .code-number { color: #f3bd74; }
+      .code-comment { color: #7789a3; }
+
+      .override {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 12px;
+        align-items: center;
+        margin-top: 12px;
+        padding: 14px 16px;
+        border: 1px solid var(--line);
+        border-radius: 13px;
+        background: var(--surface);
+      }
+
+      .override-label {
+        color: var(--muted);
+        font-size: 0.68rem;
+        font-weight: 800;
+      }
+
+      .override code {
+        min-width: 0;
+        overflow-x: auto;
+        color: var(--blue);
+        font-size: 0.69rem;
+        white-space: nowrap;
+      }
+
+      .scope-panel {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        background: var(--surface);
+      }
+
+      .scope-column {
+        padding: 30px;
+      }
+
+      .scope-column + .scope-column {
+        border-left: 1px solid var(--line);
+        background: #faf9f6;
+      }
+
+      .scope-column h3 {
+        margin-bottom: 18px;
+        font-size: 1.05rem;
+        letter-spacing: -0.03em;
+      }
+
+      .check-list {
+        display: grid;
+        gap: 13px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .check-list li {
+        display: grid;
+        grid-template-columns: 21px minmax(0, 1fr);
+        gap: 10px;
+        color: var(--muted);
+        font-size: 0.76rem;
+      }
+
+      .check,
+      .limit {
+        display: grid;
+        width: 19px;
+        height: 19px;
+        place-items: center;
+        border-radius: 50%;
+        font-size: 0.62rem;
+        font-weight: 900;
+      }
+
+      .check {
+        color: var(--mint);
+        background: var(--mint-soft);
+      }
+
+      .limit {
+        color: var(--orange);
+        background: var(--orange-soft);
+      }
+
+      .footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        margin-top: 110px;
+        padding: 29px 0 38px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 0.72rem;
+      }
+
+      .footer-links {
+        display: flex;
+        gap: 16px;
+      }
+
+      .footer a {
+        font-weight: 750;
+        text-decoration: none;
+      }
+
+      .footer a:hover {
+        color: var(--blue);
+      }
+
+      @media (max-width: 1020px) {
+        .hero {
+          grid-template-columns: 1fr;
+          gap: 42px;
+        }
+
+        .method-card {
+          max-width: 620px;
+        }
+
+        .section-head {
+          gap: 38px;
+        }
+
+        .inference-flow {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .inference-step:nth-child(3)::after {
+          display: none;
+        }
+      }
+
+      @media (max-width: 820px) {
+        .topbar {
+          grid-template-columns: 1fr auto;
+        }
+
+        .site-nav {
+          grid-column: 1 / -1;
+          grid-row: 2;
+          justify-content: flex-start;
+          overflow-x: auto;
+        }
+
+        .section-head,
+        .data-grid,
+        .training-grid,
+        .config-layout,
+        .model-snapshot-head {
+          grid-template-columns: 1fr;
+          gap: 20px;
+        }
+
+        .model-facts {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .approach-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .concept-card {
+          min-height: 0;
+        }
+
+        .concept-icon {
+          margin-bottom: 22px;
+        }
+
+        .stats-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .model-notes {
+          grid-template-columns: 1fr;
+        }
+
+        .objective {
+          grid-template-columns: 1fr;
+          gap: 12px;
+        }
+      }
+
+      @media (max-width: 620px) {
+        .shell {
+          width: min(100% - 28px, 1220px);
+        }
+
+        .topbar {
+          gap: 16px;
+        }
+
+        .site-nav {
+          gap: 15px;
+          padding-bottom: 3px;
+        }
+
+        .hero {
+          min-height: 0;
+          padding: 43px 25px 28px;
+          border-radius: 22px;
+        }
+
+        .hero h1 {
+          font-size: clamp(3.05rem, 15vw, 4.55rem);
+        }
+
+        .method-card {
+          padding: 14px;
+        }
+
+        .section {
+          padding-top: 78px;
+        }
+
+        .stats-grid,
+        .metric-targets,
+        .inference-contract,
+        .scope-panel {
+          grid-template-columns: 1fr;
+        }
+
+        .model-snapshot {
+          padding: 18px;
+        }
+
+        .model-facts {
+          grid-template-columns: 1fr;
+        }
+
+        .scope-column + .scope-column {
+          border-top: 1px solid var(--line);
+          border-left: 0;
+        }
+
+        .inference-flow {
+          grid-template-columns: 1fr;
+        }
+
+        .inference-step {
+          min-height: 0;
+        }
+
+        .inference-step:not(:last-child)::after {
+          top: auto;
+          right: auto;
+          bottom: -17px;
+          left: 50%;
+          display: block;
+          transform: rotate(90deg);
+        }
+
+        .inference-index {
+          margin-bottom: 15px;
+        }
+
+        .split-row {
+          grid-template-columns: 78px minmax(0, 1fr) 72px;
+        }
+
+        .parameter-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .footer {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+      }
+    </style>
+  </head>
+  <body data-language="en">
+    <a class="skip-link" href="#main" data-en="Skip to content" data-vi="Đi đến nội dung">Skip to content</a>
+
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="index.html" aria-label="Deep RecSys Lab home">
+          <span class="brand-mark">✦</span>
+          <span>Deep RecSys Lab</span>
+        </a>
+        <nav class="site-nav" aria-label="Primary navigation">
+          <a href="index.html" data-en="Data atlas" data-vi="Tổng quan dữ liệu">Data atlas</a>
+          <a href="results.html" data-en="Run results" data-vi="Kết quả chạy">Run results</a>
+          <a href="technical.html" data-en="Technical guide" data-vi="Hướng dẫn kỹ thuật">Technical guide</a>
+          <a href="methodology.html" aria-current="page" data-en="Methodology" data-vi="Phương pháp">Methodology</a>
+        </nav>
+        <div class="language-switch" role="group" aria-label="Language / Ngôn ngữ">
+          <button type="button" data-language-option="en" aria-pressed="true">EN</button>
+          <button type="button" data-language-option="vi" aria-pressed="false">VI</button>
+        </div>
+      </header>
+
+      <main id="main">
+        <section class="hero" aria-labelledby="page-title">
+          <div class="hero-copy-wrap">
+            <p class="eyebrow" data-en="Methodology · current V1" data-vi="Phương pháp · V1 hiện tại">Methodology · current V1</p>
+            <h1 id="page-title" data-en="How recommendations take shape." data-vi="Khuyến nghị được hình thành như thế nào.">How recommendations take shape.</h1>
+            <p
+              class="hero-lead"
+              data-en="A practical view of the complete recommender: how ratings become implicit signals, how Multi-VAE learns user taste, and how a validated Bento model turns known movies into ranked unseen candidates."
+              data-vi="Góc nhìn thực tế về toàn bộ hệ gợi ý: cách điểm đánh giá trở thành tín hiệu ẩn, cách Multi-VAE học sở thích người dùng và cách mô hình Bento đã kiểm tra biến các phim đã biết thành danh sách phim chưa xem được xếp hạng."
+            >
+              A practical view of the complete recommender: how ratings become implicit signals, how Multi-VAE learns user taste, and how a validated Bento model turns known movies into ranked unseen candidates.
+            </p>
+            <div class="hero-chips" aria-label="Method summary">
+              <span class="hero-chip">implicit feedback</span>
+              <span class="hero-chip">Multi-VAE-PR</span>
+              <span class="hero-chip">MovieLens 20M</span>
+              <span class="hero-chip">deterministic top-k</span>
+            </div>
+          </div>
+
+          <aside class="method-card" aria-label="Method flow">
+            <p class="method-card-label" data-en="The method in four moves" data-vi="Phương pháp qua bốn bước">The method in four moves</p>
+            <div class="method-flow">
+              <div class="method-node">
+                <span class="method-node-index">01</span>
+                <div><strong data-en="Filter" data-vi="Lọc">Filter</strong><span data-en="ratings → positive events" data-vi="điểm số → tương tác tích cực">ratings → positive events</span></div>
+                <span class="method-node-arrow">↓</span>
+              </div>
+              <div class="method-node">
+                <span class="method-node-index">02</span>
+                <div><strong data-en="Represent" data-vi="Biểu diễn">Represent</strong><span data-en="user × item binary vectors" data-vi="vector nhị phân người dùng × mục">user × item binary vectors</span></div>
+                <span class="method-node-arrow">↓</span>
+              </div>
+              <div class="method-node">
+                <span class="method-node-index">03</span>
+                <div><strong data-en="Learn" data-vi="Học">Learn</strong><span data-en="variational preference space" data-vi="không gian sở thích biến phân">variational preference space</span></div>
+                <span class="method-node-arrow">↓</span>
+              </div>
+              <div class="method-node">
+                <span class="method-node-index">04</span>
+                <div><strong data-en="Rank" data-vi="Xếp hạng">Rank</strong><span data-en="highest-scoring unseen movies" data-vi="phim chưa xem có điểm cao nhất">highest-scoring unseen movies</span></div>
+                <span class="method-node-arrow">↓</span>
+              </div>
+            </div>
+          </aside>
+        </section>
+
+        <div class="section-nav-wrap">
+          <nav class="section-nav" aria-label="Methodology sections">
+            <a href="#approach" class="is-active" data-en="Approach" data-vi="Cách tiếp cận">Approach</a>
+            <a href="#data" data-en="Data" data-vi="Dữ liệu">Data</a>
+            <a href="#model" data-en="Model" data-vi="Mô hình">Model</a>
+            <a href="#training" data-en="Training" data-vi="Huấn luyện">Training</a>
+            <a href="#inference" data-en="Inference" data-vi="Suy luận">Inference</a>
+            <a href="#config" data-en="Config" data-vi="Cấu hình">Config</a>
+            <a href="#scope" data-en="Scope" data-vi="Phạm vi">Scope</a>
+          </nav>
+        </div>
+
+        <section class="section" id="approach" aria-labelledby="approach-title">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker" data-en="01 · Idea of the approach" data-vi="01 · Ý tưởng tiếp cận">01 · Idea of the approach</p>
+              <h2 id="approach-title" data-en="Recommend from behavior, not profiles." data-vi="Gợi ý từ hành vi, không phải hồ sơ.">Recommend from behavior, not profiles.</h2>
+            </div>
+            <p
+              class="section-intro"
+              data-en="The system is collaborative filtering: it learns recurring co-consumption patterns across users. Titles and genres are returned as metadata, but they are not model features."
+              data-vi="Hệ thống dùng lọc cộng tác: học các mẫu đồng tiêu thụ lặp lại giữa nhiều người dùng. Tiêu đề và thể loại chỉ được trả về dưới dạng siêu dữ liệu, không phải đặc trưng đầu vào của mô hình."
+            >
+              The system is collaborative filtering: it learns recurring co-consumption patterns across users. Titles and genres are returned as metadata, but they are not model features.
+            </p>
+          </div>
+
+          <div class="approach-grid">
+            <article class="concept-card">
+              <span class="concept-icon">x</span>
+              <h3 data-en="Behavior becomes a vector" data-vi="Hành vi trở thành vector">Behavior becomes a vector</h3>
+              <p
+                data-en="Each user is represented by a binary item vector. A 1 means a rating of at least 4.0; a 0 means the item is unobserved, not necessarily disliked."
+                data-vi="Mỗi người dùng được biểu diễn bằng một vector mục nhị phân. Giá trị 1 nghĩa là điểm đánh giá từ 4.0 trở lên; 0 nghĩa là chưa quan sát thấy, không đồng nghĩa với không thích."
+              >Each user is represented by a binary item vector. A 1 means a rating of at least 4.0; a 0 means the item is unobserved, not necessarily disliked.</p>
+            </article>
+            <article class="concept-card">
+              <span class="concept-icon">z</span>
+              <h3 data-en="Taste becomes a distribution" data-vi="Sở thích trở thành phân phối">Taste becomes a distribution</h3>
+              <p
+                data-en="Multi-VAE compresses the sparse history into a 200-dimensional posterior. Sampling regularizes training; the posterior mean makes evaluation and serving deterministic."
+                data-vi="Multi-VAE nén lịch sử thưa thành hậu nghiệm 200 chiều. Lấy mẫu giúp chuẩn hóa khi huấn luyện; trung bình hậu nghiệm giúp đánh giá và phục vụ có tính xác định."
+              >Multi-VAE compresses the sparse history into a 200-dimensional posterior. Sampling regularizes training; the posterior mean makes evaluation and serving deterministic.</p>
+            </article>
+            <article class="concept-card">
+              <span class="concept-icon">k</span>
+              <h3 data-en="Prediction becomes ranking" data-vi="Dự đoán trở thành xếp hạng">Prediction becomes ranking</h3>
+              <p
+                data-en="The decoder scores every catalog item at once. Known items are masked, then the highest logits become top-k recommendations. Scores are ranking signals, not probabilities."
+                data-vi="Bộ giải mã chấm điểm toàn bộ danh mục cùng lúc. Các mục đã biết bị che, sau đó các logit cao nhất trở thành gợi ý top-k. Điểm số dùng để xếp hạng, không phải xác suất."
+              >The decoder scores every catalog item at once. Known items are masked, then the highest logits become top-k recommendations. Scores are ranking signals, not probabilities.</p>
+            </article>
+          </div>
+
+          <div class="principle">
+            <span class="principle-mark">i</span>
+            <div>
+              <strong data-en="Core assumption" data-vi="Giả định cốt lõi">Core assumption</strong>
+              <span
+                data-en="Users with overlapping positive histories are likely to value similar unseen items. The model learns this overlap nonlinearly, without requiring a persistent user ID at inference time."
+                data-vi="Những người dùng có lịch sử tương tác tích cực trùng nhau có khả năng quan tâm các mục chưa xem tương tự. Mô hình học quan hệ này theo cách phi tuyến và không cần lưu ID người dùng khi suy luận."
+              >Users with overlapping positive histories are likely to value similar unseen items. The model learns this overlap nonlinearly, without requiring a persistent user ID at inference time.</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="data" aria-labelledby="data-title">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker" data-en="02 · Data" data-vi="02 · Dữ liệu">02 · Data</p>
+              <h2 id="data-title" data-en="Explicit ratings, converted to implicit positives." data-vi="Điểm đánh giá rõ ràng, chuyển thành tín hiệu tích cực ẩn.">Explicit ratings, converted to implicit positives.</h2>
+            </div>
+            <p
+              class="section-intro"
+              data-en="MovieLens 20M supplies ratings and catalog metadata. Preprocessing is seeded, versioned, checksum-tracked, and produces sparse CSR matrices with one shared training-item mapping."
+              data-vi="MovieLens 20M cung cấp điểm đánh giá và siêu dữ liệu danh mục. Tiền xử lý dùng seed cố định, có phiên bản và checksum, tạo ma trận CSR thưa với một ánh xạ mục dùng chung từ tập huấn luyện."
+            >MovieLens 20M supplies ratings and catalog metadata. Preprocessing is seeded, versioned, checksum-tracked, and produces sparse CSR matrices with one shared training-item mapping.</p>
+          </div>
+
+          <div class="stats-grid" aria-label="MovieLens 20M statistics">
+            <article class="stat"><span class="stat-label" data-en="Raw ratings" data-vi="Điểm đánh giá gốc">Raw ratings</span><strong class="stat-value">20,000,263</strong><span class="stat-note">ratings.csv</span></article>
+            <article class="stat"><span class="stat-label" data-en="Raw users" data-vi="Người dùng gốc">Raw users</span><strong class="stat-value">138,493</strong><span class="stat-note" data-en="unique IDs" data-vi="ID duy nhất">unique IDs</span></article>
+            <article class="stat"><span class="stat-label" data-en="Raw movies" data-vi="Phim gốc">Raw movies</span><strong class="stat-value">27,278</strong><span class="stat-note" data-en="catalog records" data-vi="bản ghi danh mục">catalog records</span></article>
+            <article class="stat"><span class="stat-label" data-en="Model items" data-vi="Mục của mô hình">Model items</span><strong class="stat-value">20,108</strong><span class="stat-note" data-en="train-derived catalog" data-vi="danh mục từ tập huấn luyện">train-derived catalog</span></article>
+          </div>
+
+          <div class="data-grid">
+            <article class="data-card">
+              <p class="card-eyebrow">user split · seed 98765</p>
+              <h3 data-en="Split by user, then hide part of each held-out history." data-vi="Chia theo người dùng, sau đó ẩn một phần lịch sử của nhóm giữ lại.">Split by user, then hide part of each held-out history.</h3>
+              <p class="card-copy" data-en="Training users define the item vocabulary. Validation and test users each keep 80% of eligible history as fold-in context and approximately 20% as fold-out truth." data-vi="Người dùng huấn luyện xác định từ vựng mục. Với người dùng validation và test, 80% lịch sử đủ điều kiện làm ngữ cảnh fold-in và khoảng 20% làm đáp án fold-out.">Training users define the item vocabulary. Validation and test users each keep 80% of eligible history as fold-in context and approximately 20% as fold-out truth.</p>
+              <div class="split-bars" aria-label="User split">
+                <div class="split-row"><span class="split-label" data-en="Train" data-vi="Huấn luyện">Train</span><span class="bar-track"><span class="bar-fill" style="width: 85.4%"></span></span><span class="split-value">116,677</span></div>
+                <div class="split-row"><span class="split-label">Validation</span><span class="bar-track"><span class="bar-fill" style="width: 7.3%"></span></span><span class="split-value">10,000</span></div>
+                <div class="split-row"><span class="split-label">Test</span><span class="bar-track"><span class="bar-fill" style="width: 7.3%"></span></span><span class="split-value">10,000</span></div>
+              </div>
+            </article>
+
+            <article class="data-card">
+              <p class="card-eyebrow" data-en="preprocessing rules" data-vi="quy tắc tiền xử lý">preprocessing rules</p>
+              <h3 data-en="What enters the matrix" data-vi="Những gì đi vào ma trận">What enters the matrix</h3>
+              <ul class="rule-list">
+                <li><span class="rule-number">01</span><div><strong data-en="Keep strong ratings" data-vi="Giữ điểm đánh giá cao">Keep strong ratings</strong><span data-en="rating ≥ 4.0 becomes a positive event." data-vi="rating ≥ 4.0 trở thành tương tác tích cực.">rating ≥ 4.0 becomes a positive event.</span></div></li>
+                <li><span class="rule-number">02</span><div><strong data-en="Require enough history" data-vi="Yêu cầu đủ lịch sử">Require enough history</strong><span data-en="Users need at least 5 positive ratings." data-vi="Người dùng cần ít nhất 5 đánh giá tích cực.">Users need at least 5 positive ratings.</span></div></li>
+                <li><span class="rule-number">03</span><div><strong data-en="Build from train only" data-vi="Chỉ xây từ tập huấn luyện">Build from train only</strong><span data-en="The training catalog fixes every matrix column." data-vi="Danh mục huấn luyện cố định mọi cột ma trận.">The training catalog fixes every matrix column.</span></div></li>
+                <li><span class="rule-number">04</span><div><strong data-en="Store reproducibly" data-vi="Lưu trữ có thể tái lập">Store reproducibly</strong><span data-en="CSR float32 matrices, item IDs, metadata, manifest, and hashes." data-vi="Ma trận CSR float32, ID mục, siêu dữ liệu, manifest và hash.">CSR float32 matrices, item IDs, metadata, manifest, and hashes.</span></div></li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <section class="section" id="model" aria-labelledby="model-title">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker" data-en="03 · Model" data-vi="03 · Mô hình">03 · Model</p>
+              <h2 id="model-title" data-en="Multi-VAE learns a compact preference space." data-vi="Multi-VAE học một không gian sở thích cô đọng.">Multi-VAE learns a compact preference space.</h2>
+            </div>
+            <p
+              class="section-intro"
+              data-en="This is the multinomial variational autoencoder for collaborative filtering described by Liang et al. (2018), implemented with tanh layers, L2 input normalization, and a Gaussian latent posterior."
+              data-vi="Đây là autoencoder biến phân đa thức cho lọc cộng tác của Liang và cộng sự (2018), được cài đặt với lớp tanh, chuẩn hóa đầu vào L2 và hậu nghiệm ẩn Gaussian."
+            >This is the multinomial variational autoencoder for collaborative filtering described by Liang et al. (2018), implemented with tanh layers, L2 input normalization, and a Gaussian latent posterior.</p>
+          </div>
+
+          <article class="architecture">
+            <div class="architecture-head">
+              <div><h3 data-en="Forward path" data-vi="Luồng truyền xuôi">Forward path</h3><p data-en="One row per user · all catalog items scored together" data-vi="Mỗi hàng là một người dùng · chấm điểm toàn bộ danh mục cùng lúc">One row per user · all catalog items scored together</p></div>
+              <span class="architecture-tag">Multi-VAE-PR</span>
+            </div>
+            <div class="architecture-flow" aria-label="Multi-VAE architecture">
+              <div class="layer"><div><strong>|I|</strong><span data-en="binary input" data-vi="đầu vào nhị phân">binary input</span></div></div>
+              <div class="layer"><div><strong>600</strong><span>tanh encoder</span></div></div>
+              <div class="layer"><div><strong>200</strong><span>tanh encoder</span></div></div>
+              <div class="layer accent"><div><strong>μ / logσ²</strong><span data-en="two 200-d heads" data-vi="hai nhánh 200 chiều">two 200-d heads</span></div></div>
+              <div class="layer latent"><div><strong>z · 200</strong><span data-en="sample / mean" data-vi="lấy mẫu / trung bình">sample / mean</span></div></div>
+              <div class="layer"><div><strong>600</strong><span>tanh decoder</span></div></div>
+              <div class="layer"><div><strong>|I|</strong><span data-en="item logits" data-vi="logit của mục">item logits</span></div></div>
+            </div>
+            <div class="model-notes">
+              <div class="model-note"><strong data-en="Before encoding" data-vi="Trước mã hóa">Before encoding</strong><span data-en="L2 normalize each row, then apply 0.5 input dropout during training." data-vi="Chuẩn hóa L2 từng hàng, sau đó dropout đầu vào 0.5 khi huấn luyện.">L2 normalize each row, then apply 0.5 input dropout during training.</span></div>
+              <div class="model-note"><strong data-en="During training" data-vi="Khi huấn luyện">During training</strong><span data-en="Reparameterize z = μ + εσ to learn a smooth latent preference space." data-vi="Tái tham số hóa z = μ + εσ để học không gian sở thích ẩn trơn.">Reparameterize z = μ + εσ to learn a smooth latent preference space.</span></div>
+              <div class="model-note"><strong data-en="During evaluation" data-vi="Khi đánh giá">During evaluation</strong><span data-en="Use z = μ, eliminating sampling noise for repeatable rankings." data-vi="Dùng z = μ, loại bỏ nhiễu lấy mẫu để thứ hạng có thể lặp lại.">Use z = μ, eliminating sampling noise for repeatable rankings.</span></div>
+            </div>
+          </article>
+
+          <div class="objective">
+            <div><strong data-en="Optimization objective" data-vi="Hàm mục tiêu tối ưu">Optimization objective</strong><span data-en="Multinomial reconstruction rewards probability mass on observed positives; annealed KL regularization keeps the posterior close to a standard normal prior." data-vi="Tái tạo đa thức thưởng cho khối xác suất đặt trên tương tác tích cực đã quan sát; KL tăng dần giữ hậu nghiệm gần với tiên nghiệm chuẩn tắc.">Multinomial reconstruction rewards probability mass on observed positives; annealed KL regularization keeps the posterior close to a standard normal prior.</span></div>
+            <div class="formula">L = NLL<sub>mult</sub> + β · KL(q(z|x) || N(0,I))</div>
+          </div>
+        </section>
+
+        <section class="section" id="training" aria-labelledby="training-title">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker" data-en="04 · Training" data-vi="04 · Huấn luyện">04 · Training</p>
+              <h2 id="training-title" data-en="Train, validate, checkpoint, repeat." data-vi="Huấn luyện, đánh giá, lưu checkpoint, lặp lại.">Train, validate, checkpoint, repeat.</h2>
+            </div>
+            <p
+              class="section-intro"
+              data-en="Runs are seeded and metadata-rich. Adam optimizes dense user batches, β rises linearly toward its cap, and the best checkpoint is selected by validation NDCG@100."
+              data-vi="Mỗi lần chạy có seed cố định và đầy đủ siêu dữ liệu. Adam tối ưu các batch người dùng dạng dense, β tăng tuyến tính đến ngưỡng và checkpoint tốt nhất được chọn theo NDCG@100 trên validation."
+            >Runs are seeded and metadata-rich. Adam optimizes dense user batches, β rises linearly toward its cap, and the best checkpoint is selected by validation NDCG@100.</p>
+          </div>
+
+          <div class="training-grid">
+            <article class="training-card">
+              <p class="card-eyebrow" data-en="one training run" data-vi="một lần huấn luyện">one training run</p>
+              <h3 data-en="Lifecycle" data-vi="Vòng đời">Lifecycle</h3>
+              <div class="training-steps">
+                <div class="training-step"><span class="step-dot">01</span><div><strong data-en="Compose and record" data-vi="Ghép và ghi cấu hình">Compose and record</strong><span data-en="Hydra resolves config groups; the run saves resolved YAML/JSON plus environment details." data-vi="Hydra phân giải các nhóm cấu hình; lần chạy lưu YAML/JSON đã phân giải cùng thông tin môi trường.">Hydra resolves config groups; the run saves resolved YAML/JSON plus environment details.</span></div></div>
+                <div class="training-step"><span class="step-dot">02</span><div><strong data-en="Optimize batches" data-vi="Tối ưu theo batch">Optimize batches</strong><span data-en="Dense float32 rows pass through Multi-VAE with sampling; Adam updates from NLL + β·KL." data-vi="Các hàng dense float32 đi qua Multi-VAE có lấy mẫu; Adam cập nhật theo NLL + β·KL.">Dense float32 rows pass through Multi-VAE with sampling; Adam updates from NLL + β·KL.</span></div></div>
+                <div class="training-step"><span class="step-dot">03</span><div><strong data-en="Validate every epoch" data-vi="Đánh giá mỗi epoch">Validate every epoch</strong><span data-en="Use posterior means, mask fold-in items, and compute Recall and NDCG at 20, 50, and 100." data-vi="Dùng trung bình hậu nghiệm, che các mục fold-in và tính Recall cùng NDCG tại 20, 50 và 100.">Use posterior means, mask fold-in items, and compute Recall and NDCG at 20, 50, and 100.</span></div></div>
+                <div class="training-step"><span class="step-dot">04</span><div><strong data-en="Persist progress" data-vi="Lưu tiến trình">Persist progress</strong><span data-en="Write metrics.jsonl and last.pt; update best.pt when validation NDCG@100 improves." data-vi="Ghi metrics.jsonl và last.pt; cập nhật best.pt khi NDCG@100 validation tốt hơn.">Write metrics.jsonl and last.pt; update best.pt when validation NDCG@100 improves.</span></div></div>
+              </div>
+            </article>
+
+            <article class="training-card">
+              <p class="card-eyebrow" data-en="default recipe" data-vi="công thức mặc định">default recipe</p>
+              <h3 data-en="Training controls" data-vi="Tham số huấn luyện">Training controls</h3>
+              <div class="parameter-grid">
+                <div class="parameter"><span data-en="Epochs" data-vi="Số epoch">Epochs</span><strong>200</strong></div>
+                <div class="parameter"><span data-en="Batch size" data-vi="Kích thước batch">Batch size</span><strong>500</strong></div>
+                <div class="parameter"><span data-en="Learning rate" data-vi="Learning rate">Learning rate</span><strong>1e-3</strong></div>
+                <div class="parameter"><span>Optimizer</span><strong>Adam</strong></div>
+                <div class="parameter"><span>β cap</span><strong>0.2</strong></div>
+                <div class="parameter"><span data-en="Anneal steps" data-vi="Bước tăng β">Anneal steps</span><strong>200,000</strong></div>
+                <div class="parameter"><span data-en="Precision" data-vi="Độ chính xác">Precision</span><strong>fp32</strong></div>
+                <div class="parameter"><span data-en="Device order" data-vi="Thứ tự thiết bị">Device order</span><strong>CUDA → MPS → CPU</strong></div>
+              </div>
+              <div class="status-box">
+                <div class="status-line"><span class="status-dot"></span><span data-en="Current evidence level" data-vi="Mức bằng chứng hiện tại">Current evidence level</span></div>
+                <p data-en="The repository validates bounded smoke runs, not a completed 200-epoch paper reproduction. The values below are paper targets, kept separate from local results." data-vi="Kho mã xác nhận các lần chạy smoke có giới hạn, chưa phải tái lập đầy đủ 200 epoch của bài báo. Các giá trị dưới đây là mục tiêu từ bài báo và được tách riêng khỏi kết quả cục bộ.">The repository validates bounded smoke runs, not a completed 200-epoch paper reproduction. The values below are paper targets, kept separate from local results.</p>
+                <div class="metric-targets">
+                  <div class="metric-target"><strong>0.395</strong><span>paper Recall@20</span></div>
+                  <div class="metric-target"><strong>0.537</strong><span>paper Recall@50</span></div>
+                  <div class="metric-target"><strong>≈0.426</strong><span>paper NDCG@100</span></div>
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="section" id="inference" aria-labelledby="inference-title">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker" data-en="05 · Inference" data-vi="05 · Suy luận">05 · Inference</p>
+              <h2 id="inference-title" data-en="Known movies in. Unseen rankings out." data-vi="Phim đã biết đi vào. Xếp hạng phim chưa xem đi ra.">Known movies in. Unseen rankings out.</h2>
+            </div>
+            <p
+              class="section-intro"
+              data-en="Serving is stateless. BentoML resolves one explicit Model Store tag, validates it at startup, and returns a deterministic ranking for each MovieLens history."
+              data-vi="Phục vụ không lưu trạng thái. BentoML phân giải một tag Model Store rõ ràng, kiểm tra khi khởi động và trả về xếp hạng xác định cho mỗi lịch sử MovieLens."
+            >Serving is stateless. BentoML resolves one explicit Model Store tag, validates it at startup, and returns a deterministic ranking for each MovieLens history.</p>
+          </div>
+
+          <div class="inference-flow" aria-label="Inference pipeline">
+            <article class="inference-step"><span class="inference-index">01 / LOAD</span><h3 data-en="Validate Bento model" data-vi="Kiểm tra mô hình Bento">Validate Bento model</h3><p data-en="Resolve an explicit tag and verify schema v2, checksums, item order, metadata, weights, and tensor shapes." data-vi="Phân giải tag rõ ràng và xác minh schema v2, checksum, thứ tự mục, siêu dữ liệu, trọng số và kích thước tensor.">Resolve an explicit tag and verify schema v2, checksums, item order, metadata, weights, and tensor shapes.</p></article>
+            <article class="inference-step"><span class="inference-index">02 / MAP</span><h3 data-en="Resolve IDs" data-vi="Ánh xạ ID">Resolve IDs</h3><p data-en="Reject unknown movie IDs and map known IDs to model-column positions." data-vi="Từ chối ID phim không biết và ánh xạ ID hợp lệ sang vị trí cột mô hình.">Reject unknown movie IDs and map known IDs to model-column positions.</p></article>
+            <article class="inference-step"><span class="inference-index">03 / VECTOR</span><h3 data-en="Build history" data-vi="Tạo lịch sử">Build history</h3><p data-en="Create one float32 binary row with 1s at the supplied movie positions." data-vi="Tạo một hàng nhị phân float32 với giá trị 1 tại các vị trí phim được cung cấp.">Create one float32 binary row with 1s at the supplied movie positions.</p></article>
+            <article class="inference-step"><span class="inference-index">04 / SCORE</span><h3 data-en="Decode logits" data-vi="Giải mã logit">Decode logits</h3><p data-en="Run inference_mode with sample=false, so z equals the posterior mean μ." data-vi="Chạy inference_mode với sample=false để z bằng trung bình hậu nghiệm μ.">Run inference_mode with sample=false, so z equals the posterior mean μ.</p></article>
+            <article class="inference-step"><span class="inference-index">05 / MASK</span><h3 data-en="Remove seen" data-vi="Loại mục đã xem">Remove seen</h3><p data-en="Exclude every supplied history item from the candidate ranking." data-vi="Loại mọi mục trong lịch sử đầu vào khỏi danh sách ứng viên.">Exclude every supplied history item from the candidate ranking.</p></article>
+            <article class="inference-step"><span class="inference-index">06 / TOP-K</span><h3 data-en="Return results" data-vi="Trả kết quả">Return results</h3><p data-en="Sort unseen logits and attach movie ID, title, genres, and score." data-vi="Sắp xếp logit của mục chưa xem rồi gắn ID phim, tiêu đề, thể loại và điểm.">Sort unseen logits and attach movie ID, title, genres, and score.</p></article>
+          </div>
+
+          <article class="model-snapshot" aria-labelledby="loaded-model-title">
+            <div class="model-snapshot-head">
+              <div>
+                <p class="card-eyebrow" data-en="real runtime value" data-vi="giá trị runtime thực">real runtime value</p>
+                <h3 id="loaded-model-title" data-en="What BentoML loads per worker" data-vi="BentoML tải gì trên mỗi worker">What BentoML loads per worker</h3>
+              </div>
+              <p
+                class="model-snapshot-copy"
+                data-en="This compact view shows the checksum-validated LoadedModel held once by the single Bento CPU worker. Large arrays and mappings are elided."
+                data-vi="Góc nhìn rút gọn này cho thấy LoadedModel đã xác minh checksum, được giữ một lần bởi worker CPU Bento duy nhất. Các mảng và ánh xạ lớn được lược bớt."
+              >This compact view shows the checksum-validated LoadedModel held once by the single Bento CPU worker. Large arrays and mappings are elided.</p>
+            </div>
+
+            <div class="model-facts" aria-label="Loaded Bento model summary">
+              <div class="model-fact"><span data-en="Object type" data-vi="Kiểu đối tượng">Object type</span><strong>LoadedModel</strong></div>
+              <div class="model-fact"><span data-en="Model version" data-vi="Phiên bản mô hình">Model version</span><strong>movielens-cpu-smoke-v1</strong></div>
+              <div class="model-fact"><span data-en="Mapped items" data-vi="Số mục đã ánh xạ">Mapped items</span><strong>20,108 · int64</strong></div>
+              <div class="model-fact"><span data-en="Schema" data-vi="Schema">Schema</span><strong>2.0 · validated</strong></div>
+            </div>
+
+            <div class="code-card model-value-card" aria-label="Compact value of the loaded Bento model">
+              <div class="code-head"><span class="window-dots" aria-hidden="true"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span></span><span>BentoModel("deep_recsys:movielens-cpu-smoke-v1") · Python</span></div>
+              <pre class="code-block"><span class="code-type">LoadedModel</span>(
+  <span class="code-key">model_tag</span>=<span class="code-string">'deep_recsys:movielens-cpu-smoke-v1'</span>,
+  <span class="code-key">model</span>=<span class="code-type">MultiVAE</span>(
+    n_items=<span class="code-number">20108</span>, hidden_dims=(<span class="code-number">600</span>, <span class="code-number">200</span>, <span class="code-number">600</span>),
+    latent_dim=<span class="code-number">200</span>, dropout=<span class="code-number">0.5</span>, input_normalization=<span class="code-string">'l2'</span>
+  ),
+  <span class="code-key">item_ids</span>=array([<span class="code-number">1</span>, <span class="code-number">2</span>, <span class="code-number">3</span>, ..., <span class="code-number">131166</span>, <span class="code-number">131176</span>, <span class="code-number">131262</span>],
+                 shape=(<span class="code-number">20108</span>,), dtype=int64),
+  <span class="code-key">metadata</span>={
+    <span class="code-number">1</span>: {<span class="code-string">'movie_id'</span>: <span class="code-number">1</span>, <span class="code-string">'title'</span>: <span class="code-string">'Toy Story (1995)'</span>,
+        <span class="code-string">'genres'</span>: <span class="code-string">'Adventure|Animation|Children|Comedy|Fantasy'</span>},
+    ...  <span class="code-comment"># 20,108 entries</span>
+  },
+  <span class="code-key">manifest</span>={<span class="code-string">'artifact_schema_version'</span>: <span class="code-string">'2.0'</span>,
+            <span class="code-string">'model_version'</span>: <span class="code-string">'movielens-cpu-smoke-v1'</span>,
+            <span class="code-string">'mapping'</span>: {<span class="code-string">'count'</span>: <span class="code-number">20108</span>,
+                        <span class="code-string">'sha256'</span>: <span class="code-string">'ab306111c05ba9d6e7fc0a0881cefad801f0662706d1fedfc834e341a9267a27'</span>}},
+  <span class="code-key">metrics</span>={<span class="code-string">'ndcg@20'</span>: <span class="code-number">0.021645238623023033</span>,
+           <span class="code-string">'recall@20'</span>: <span class="code-number">0.030113833025097847</span>,
+           <span class="code-string">'ndcg@100'</span>: <span class="code-number">0.033256806433200836</span>,
+           <span class="code-string">'recall@100'</span>: <span class="code-number">0.06983388960361481</span>},
+  <span class="code-key">config</span>={<span class="code-string">'model'</span>: {...}, <span class="code-string">'source_checkpoint'</span>: <span class="code-string">'best.pt'</span>}
+)</pre>
+            </div>
+            <p class="model-value-note" data-en="Registered models are immutable; ellipses only shorten large collections." data-vi="Mô hình đã đăng ký là bất biến; dấu ba chấm chỉ rút gọn các tập dữ liệu lớn.">Registered models are immutable; ellipses only shorten large collections.</p>
+          </article>
+
+          <div class="inference-contract">
+            <article class="contract-panel request">
+              <h3 data-en="Request contract" data-vi="Hợp đồng request">Request contract</h3>
+              <p data-en="A known-item history and the desired ranking length. Every movie ID must exist in the registered item mapping." data-vi="Lịch sử các mục đã biết và độ dài danh sách mong muốn. Mọi ID phim phải tồn tại trong ánh xạ mục đã đăng ký.">A known-item history and the desired ranking length. Every movie ID must exist in the registered item mapping.</p>
+              <code class="contract-code">POST /recommend · { movie_ids: [...], top_k: 20 }</code>
+            </article>
+            <article class="contract-panel response">
+              <h3 data-en="Response contract" data-vi="Hợp đồng response">Response contract</h3>
+              <p data-en="Ranked unseen movies, model version, and request ID. The API can optionally require an API key." data-vi="Các phim chưa xem đã xếp hạng, phiên bản mô hình và request ID. API có thể tùy chọn yêu cầu API key.">Ranked unseen movies, model version, and request ID. The API can optionally require an API key.</p>
+              <code class="contract-code">{ movie_id, title, genres, score } × top_k</code>
+            </article>
+          </div>
+          <div class="warning"><span class="warning-mark">!</span><span data-en="Recommendation scores are uncalibrated logits. Compare them only for ordering within the same request; do not read them as probabilities or confidence percentages." data-vi="Điểm gợi ý là logit chưa hiệu chỉnh. Chỉ dùng chúng để so sánh thứ tự trong cùng một request; không diễn giải như xác suất hay phần trăm độ tin cậy.">Recommendation scores are uncalibrated logits. Compare them only for ordering within the same request; do not read them as probabilities or confidence percentages.</span></div>
+        </section>
+
+        <section class="section" id="config" aria-labelledby="config-title">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker" data-en="06 · Configuration" data-vi="06 · Cấu hình">06 · Configuration</p>
+              <h2 id="config-title" data-en="One composed config, explicit overrides." data-vi="Một cấu hình được ghép, ghi đè rõ ràng.">One composed config, explicit overrides.</h2>
+            </div>
+            <p
+              class="section-intro"
+              data-en="Hydra composes dataset, model, trainer, evaluation, and experiment groups. The resolved model configuration is stored with each run and its registered Bento model."
+              data-vi="Hydra ghép các nhóm dataset, model, trainer, evaluation và experiment. Cấu hình mô hình đã phân giải được lưu cùng mỗi lần chạy và mô hình Bento đã đăng ký."
+            >Hydra composes dataset, model, trainer, evaluation, and experiment groups. The resolved model configuration is stored with each run and its registered Bento model.</p>
+          </div>
+
+          <div class="config-layout">
+            <article class="config-card">
+              <p class="card-eyebrow">configs/config.yaml</p>
+              <h3 data-en="Configuration groups" data-vi="Các nhóm cấu hình">Configuration groups</h3>
+              <p class="card-copy" data-en="Defaults remain readable in separate files, while command-line overrides create traceable experiments without editing source." data-vi="Giá trị mặc định nằm trong các tệp riêng dễ đọc, còn ghi đè dòng lệnh tạo thí nghiệm có thể truy vết mà không sửa mã nguồn.">Defaults remain readable in separate files, while command-line overrides create traceable experiments without editing source.</p>
+              <div class="config-groups">
+                <div class="config-group"><code>dataset</code><span data-en="MovieLens paths, filters, user counts, fold-in ratio, and seed." data-vi="Đường dẫn MovieLens, bộ lọc, số người dùng, tỷ lệ fold-in và seed.">MovieLens paths, filters, user counts, fold-in ratio, and seed.</span></div>
+                <div class="config-group"><code>model</code><span data-en="Architecture, latent size, dropout, and input normalization." data-vi="Kiến trúc, kích thước latent, dropout và chuẩn hóa đầu vào.">Architecture, latent size, dropout, and input normalization.</span></div>
+                <div class="config-group"><code>trainer</code><span data-en="Epochs, optimizer values, β schedule, precision, limits, and resume path." data-vi="Epoch, tham số tối ưu, lịch β, độ chính xác, giới hạn và đường dẫn tiếp tục.">Epochs, optimizer values, β schedule, precision, limits, and resume path.</span></div>
+                <div class="config-group"><code>evaluation</code><span data-en="Ranking cutoffs, seen-item masking, and optional batch bounds." data-vi="Ngưỡng xếp hạng, che mục đã xem và giới hạn batch tùy chọn.">Ranking cutoffs, seen-item masking, and optional batch bounds.</span></div>
+                <div class="config-group"><code>experiment</code><span data-en="Run name and notes that distinguish smoke evidence from paper targets." data-vi="Tên và ghi chú để phân biệt kết quả smoke với mục tiêu bài báo.">Run name and notes that distinguish smoke evidence from paper targets.</span></div>
+              </div>
+            </article>
+
+            <div>
+              <article class="code-card" aria-label="Default configuration example">
+                <div class="code-head"><span class="window-dots" aria-hidden="true"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span></span><span>resolved defaults · YAML</span></div>
+                <pre class="code-block"><span class="code-key">seed:</span> <span class="code-number">98765</span>
+<span class="code-key">device:</span> <span class="code-string">auto</span>
+<span class="code-key">model_version:</span> <span class="code-string">multvae-v1</span>
+
+<span class="code-key">dataset:</span>
+  <span class="code-key">positive_rating_threshold:</span> <span class="code-number">4.0</span>
+  <span class="code-key">min_positive_ratings:</span> <span class="code-number">5</span>
+  <span class="code-key">n_validation_users:</span> <span class="code-number">10000</span>
+  <span class="code-key">n_test_users:</span> <span class="code-number">10000</span>
+  <span class="code-key">fold_in_ratio:</span> <span class="code-number">0.8</span>
+
+<span class="code-key">model:</span>
+  <span class="code-key">hidden_dims:</span> [<span class="code-number">600</span>, <span class="code-number">200</span>, <span class="code-number">600</span>]
+  <span class="code-key">latent_dim:</span> <span class="code-number">200</span>
+  <span class="code-key">dropout:</span> <span class="code-number">0.5</span>
+  <span class="code-key">input_normalization:</span> <span class="code-string">l2</span>
+
+<span class="code-key">trainer:</span>
+  <span class="code-key">epochs:</span> <span class="code-number">200</span>
+  <span class="code-key">batch_size:</span> <span class="code-number">500</span>
+  <span class="code-key">learning_rate:</span> <span class="code-number">0.001</span>
+  <span class="code-key">beta_cap:</span> <span class="code-number">0.2</span>
+  <span class="code-key">total_anneal_steps:</span> <span class="code-number">200000</span>
+
+<span class="code-key">evaluation:</span>
+  <span class="code-key">ks:</span> [<span class="code-number">20</span>, <span class="code-number">50</span>, <span class="code-number">100</span>]
+  <span class="code-key">mask_seen:</span> <span class="code-string">true</span></pre>
+              </article>
+              <div class="override"><span class="override-label" data-en="Example override" data-vi="Ví dụ ghi đè">Example override</span><code>deep-recsys train --config-name config device=mps trainer.epochs=1 trainer.max_train_batches=10</code></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" id="scope" aria-labelledby="scope-title">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker" data-en="07 · Current scope" data-vi="07 · Phạm vi hiện tại">07 · Current scope</p>
+              <h2 id="scope-title" data-en="What V1 proves—and what it does not." data-vi="V1 chứng minh điều gì—và chưa chứng minh điều gì.">What V1 proves—and what it does not.</h2>
+            </div>
+            <p
+              class="section-intro"
+              data-en="The methodology is implemented end to end and validated through bounded runs. Scientific claims remain deliberately narrower than the engineering coverage."
+              data-vi="Phương pháp đã được cài đặt xuyên suốt và xác nhận bằng các lần chạy có giới hạn. Các tuyên bố khoa học được giữ hẹp hơn phạm vi kiểm thử kỹ thuật."
+            >The methodology is implemented end to end and validated through bounded runs. Scientific claims remain deliberately narrower than the engineering coverage.</p>
+          </div>
+
+          <div class="scope-panel">
+            <article class="scope-column">
+              <h3 data-en="Implemented and checked" data-vi="Đã cài đặt và kiểm tra">Implemented and checked</h3>
+              <ul class="check-list">
+                <li><span class="check">✓</span><span data-en="Complete MovieLens preprocessing with the expected 20,108-item catalog." data-vi="Tiền xử lý MovieLens đầy đủ với danh mục 20.108 mục như kỳ vọng.">Complete MovieLens preprocessing with the expected 20,108-item catalog.</span></li>
+                <li><span class="check">✓</span><span data-en="Multi-VAE forward pass, loss, KL schedule, checkpointing, and deterministic ranking metrics." data-vi="Luồng Multi-VAE, hàm loss, lịch KL, checkpoint và metric xếp hạng xác định.">Multi-VAE forward pass, loss, KL schedule, checkpointing, and deterministic ranking metrics.</span></li>
+                <li><span class="check">✓</span><span data-en="Synthetic end-to-end smoke path through training, Bento model registration, and API prediction." data-vi="Luồng smoke tổng thể bằng dữ liệu tổng hợp qua huấn luyện, đăng ký mô hình Bento và dự đoán API.">Synthetic end-to-end smoke path through training, Bento model registration, and API prediction.</span></li>
+                <li><span class="check">✓</span><span data-en="Immutable schema-v2 Model Store artifacts and a class-based BentoML Service with native health, metrics, and OpenAPI." data-vi="Artifact Model Store schema-v2 bất biến và Service BentoML dạng class với health, metrics và OpenAPI gốc.">Immutable schema-v2 Model Store artifacts and a class-based BentoML Service with native health, metrics, and OpenAPI.</span></li>
+              </ul>
+            </article>
+            <article class="scope-column">
+              <h3 data-en="Important boundaries" data-vi="Các giới hạn quan trọng">Important boundaries</h3>
+              <ul class="check-list">
+                <li><span class="limit">!</span><span data-en="No completed full 200-epoch paper reproduction is claimed yet." data-vi="Chưa tuyên bố hoàn thành tái lập bài báo với 200 epoch đầy đủ.">No completed full 200-epoch paper reproduction is claimed yet.</span></li>
+                <li><span class="limit">!</span><span data-en="The model is collaborative only: no title, genre, text, temporal, or contextual features." data-vi="Mô hình chỉ dùng lọc cộng tác: không dùng tiêu đề, thể loại, văn bản, thời gian hay ngữ cảnh.">The model is collaborative only: no title, genre, text, temporal, or contextual features.</span></li>
+                <li><span class="limit">!</span><span data-en="Unknown items cannot be scored, and empty or very short histories remain a cold-start limitation." data-vi="Không thể chấm điểm mục chưa biết; lịch sử rỗng hoặc quá ngắn vẫn là giới hạn cold-start.">Unknown items cannot be scored, and empty or very short histories remain a cold-start limitation.</span></li>
+                <li><span class="limit">!</span><span data-en="MovieLens is research data with separate usage restrictions; it is not bundled or redistributed here." data-vi="MovieLens là dữ liệu nghiên cứu có điều khoản sử dụng riêng; dữ liệu không được đóng gói hay phân phối lại tại đây.">MovieLens is research data with separate usage restrictions; it is not bundled or redistributed here.</span></li>
+              </ul>
+            </article>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span>Deep RecSys Lab · <span data-en="Methodology V1" data-vi="Phương pháp V1">Methodology V1</span> · <span id="year"></span></span>
+        <div class="footer-links"><a href="index.html" data-en="Data atlas" data-vi="Tổng quan dữ liệu">Data atlas</a><a href="results.html" data-en="Run results" data-vi="Kết quả chạy">Run results</a><a href="technical.html" data-en="Technical guide" data-vi="Hướng dẫn kỹ thuật">Technical guide</a><a href="api.html" data-en="Serving console" data-vi="Bảng điều khiển mô hình">Serving console</a><a href="#main" data-en="Back to top ↑" data-vi="Lên đầu trang ↑">Back to top ↑</a></div>
+      </footer>
+    </div>
+
+    <script>
+      (() => {
+        const body = document.body;
+        const languageButtons = [...document.querySelectorAll("[data-language-option]")];
+        const translatedElements = [...document.querySelectorAll("[data-en][data-vi]")];
+
+        const applyLanguage = (language) => {
+          const nextLanguage = language === "vi" ? "vi" : "en";
+          document.documentElement.lang = nextLanguage;
+          body.dataset.language = nextLanguage;
+          translatedElements.forEach((element) => {
+            element.textContent = element.dataset[nextLanguage];
+          });
+          languageButtons.forEach((button) => {
+            button.setAttribute("aria-pressed", String(button.dataset.languageOption === nextLanguage));
+          });
+          document.title = nextLanguage === "vi"
+            ? "Phương pháp · Deep RecSys Lab"
+            : "Methodology · Deep RecSys Lab";
+          try {
+            localStorage.setItem("deep-recsys-language", nextLanguage);
+          } catch (_) {
+            // The page still works when storage is unavailable.
+          }
+        };
+
+        let storedLanguage = null;
+        try {
+          storedLanguage = localStorage.getItem("deep-recsys-language");
+        } catch (_) {
+          storedLanguage = null;
+        }
+        const browserLanguage = navigator.language.toLowerCase().startsWith("vi") ? "vi" : "en";
+        applyLanguage(storedLanguage || browserLanguage);
+
+        languageButtons.forEach((button) => {
+          button.addEventListener("click", () => applyLanguage(button.dataset.languageOption));
+        });
+
+        document.getElementById("year").textContent = String(new Date().getFullYear());
+
+        const navLinks = [...document.querySelectorAll(".section-nav a")];
+        const sections = navLinks
+          .map((link) => document.querySelector(link.getAttribute("href")))
+          .filter(Boolean);
+
+        if ("IntersectionObserver" in window) {
+          const observer = new IntersectionObserver((entries) => {
+            const visible = entries
+              .filter((entry) => entry.isIntersecting)
+              .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+            if (!visible) return;
+            navLinks.forEach((link) => {
+              link.classList.toggle("is-active", link.getAttribute("href") === `#${visible.target.id}`);
+            });
+          }, { rootMargin: "-18% 0px -64%", threshold: [0, 0.1, 0.35] });
+          sections.forEach((section) => observer.observe(section));
+        }
+      })();
+    </script>
+  </body>
+</html>
