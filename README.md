@@ -1,5 +1,7 @@
 # deep-recsys-lab
 
+[![CI](https://github.com/ducanh2505/deep-recsys-lab/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ducanh2505/deep-recsys-lab/actions/workflows/ci.yml)
+
 Implicit-feedback recommenders are easy to reproduce incorrectly and hard to ship reliably;
 deep-recsys-lab turns MovieLens-20M histories into deterministic unseen-movie rankings through
 a reproducible Multi-VAE → ONNX → BentoML pipeline.
