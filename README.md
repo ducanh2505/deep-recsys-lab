@@ -1,16 +1,52 @@
 # deep-recsys-lab
 
-`deep-recsys-lab` is a local, reproducible implementation of Multi-VAE for
-implicit MovieLens-20M collaborative filtering. It contains the data pipeline,
-paper model, deterministic ranking evaluation, immutable ONNX model
-registration, and a stateless ONNX Runtime/BentoML recommendation Service.
+Implicit-feedback recommenders are easy to reproduce incorrectly and hard to ship reliably;
+deep-recsys-lab turns MovieLens-20M histories into deterministic unseen-movie rankings through
+a reproducible Multi-VAE → ONNX → BentoML pipeline.
 
-This repository does not contain MovieLens data, checkpoints, or a code
-license. Downloaded and processed artifacts are ignored by Git. MovieLens has
-separate usage restrictions: it is for research use, must be acknowledged, may
-not be redistributed without permission, and may not be used commercially
-without permission. Read the [official MovieLens-20M README](https://files.grouplens.org/datasets/movielens/ml-20m-README.html)
-before downloading it.
+[Results](docs/acceptance.md) · [Methodology](#methodology) · [API](#api) ·
+[Limitations](#limitations)
+
+| **0.5389 Recall@50** | **1.055× p50 speedup** | **87.58% coverage** |
+| :---: | :---: | :---: |
+| Held-out test; `+0.0019` vs. the paper target | ONNX Runtime vs. PyTorch on the same host | 42 passing tests across the core package |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    source["MovieLens 20M<br/>or synthetic interactions"] --> prep["Seeded preparation<br/>CSR matrices + manifest"]
+    prep --> train["PyTorch Multi-VAE<br/>Hydra training"]
+    train --> eval["Held-out ranking<br/>Recall + NDCG"]
+    train --> checkpoint["best.pt"]
+    checkpoint --> register["Immutable registration<br/>ONNX opset 20 + schema-v3 checksums"]
+    register --> store["Bento Model Store"]
+    store --> serve["BentoML + ONNX Runtime<br/>adaptive CPU batching"]
+    serve --> clients["Recommendation API<br/>health, metrics, serving console"]
+```
+
+![Deep RecSys Lab serving console with a ready ONNX model, a MovieLens test profile, and ranked unseen-movie recommendations.](docs/assets/serving-console.png)
+
+_A real top-10 request against `deep_recsys:multvae-onnx-v1` and its 20,108-item catalog.
+The displayed round-trip time is illustrative, not benchmark evidence._
+
+**Stack:** Python 3.12 · PyTorch · Hydra · NumPy/SciPy · ONNX Runtime · BentoML ·
+Docker Compose · uv
+
+## One-command synthetic demo
+
+No MovieLens download is required. From a fresh checkout with
+[uv](https://docs.astral.sh/uv/) installed, run:
+
+```bash
+uv run --extra cpu python -m deep_recsys_lab.smoke --output-dir /tmp/deep-recsys-smoke
+```
+
+The bounded train → register → serve workflow finishes with:
+
+```text
+smoke acceptance: PASS
+```
 
 ## Install
 
@@ -27,6 +63,8 @@ The mutually exclusive extras follow uv's explicit PyTorch index guidance.
 fails with a useful error. ONNX, ONNX Script, and ONNX Runtime are core
 dependencies because model registration exports and validates the production
 artifact on every accelerator configuration.
+
+<a id="methodology"></a>
 
 ## Train, evaluate, register, and serve
 
@@ -61,6 +99,10 @@ Schema-v2 PyTorch-only model tags cannot be rebuilt with this service because
 the production image no longer contains Torch. Re-register their original
 checkpoints under a new immutable version; already-built schema-v2 containers
 continue to run unchanged.
+
+<a id="api"></a>
+
+### API
 
 The public serving endpoints are:
 
@@ -222,6 +264,25 @@ The clean analysis notebook in `notebooks/analysis.ipynb` only reads saved
 metrics and model metadata. The original downloaded `mulvae-cf.ipynb` is
 preserved unchanged and ignored by Git. The local validation record is in
 [`docs/acceptance.md`](docs/acceptance.md).
+
+<a id="limitations"></a>
+
+## Limitations
+
+- Multi-VAE is collaborative-only: titles, genres, text, time, and context do
+  not influence ranking scores.
+- Inference is catalog-bound. Unknown movies cannot be scored, and empty or
+  very short histories remain cold-start cases.
+- This repository contains no MovieLens data, checkpoints, or code license.
+  Downloaded and processed artifacts are ignored by Git. MovieLens is restricted
+  to research use, requires acknowledgment, cannot be redistributed without
+  permission, and cannot be used commercially without permission; read the
+  [official MovieLens-20M README](https://files.grouplens.org/datasets/movielens/ml-20m-README.html)
+  before downloading it.
+- The ONNX speedup is a controlled, batch-size-one model-forward result from one
+  host. HTTP latency, throughput, and the serving-console round trip are
+  hardware-specific, non-gating measurements rather than production-capacity
+  claims.
 
 ## References
 
