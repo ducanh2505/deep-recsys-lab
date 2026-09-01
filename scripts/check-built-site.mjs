@@ -25,17 +25,33 @@ for (const required of [...pages, "reports/lightgcn.json", "og.png", "server/ind
   if (!(await exists(required))) throw new Error(`Missing built site asset: ${required}`);
 }
 
+const worker = (await import(new URL("server/index.js", root))).default;
+const testOrigin = "https://deep-recsys-lightgcn-ml20m.sites.test";
+
 for (const page of pages) {
   const html = await readFile(new URL(page, root), "utf8");
   for (const marker of ["TODO", "TBD", "REPLACE_ME"]) {
     if (html.includes(marker)) throw new Error(`${page} contains ${marker}`);
   }
-  for (const requiredMeta of ["og:title", "og:description", "og:image", "twitter:card"]) {
-    if (!html.includes(requiredMeta)) throw new Error(`${page} is missing ${requiredMeta}`);
+  if (!html.includes('__SITE_ORIGIN__/og.png')) {
+    throw new Error(`${page} is missing the trusted-origin social image token`);
   }
-  const image = html.match(/<meta property="og:image" content="([^"]+)"/i)?.[1];
-  if (!image || !image.startsWith("https://")) {
-    throw new Error(`${page} must use a trusted absolute HTTPS social image URL`);
+  const response = await worker.fetch(new Request(`${testOrigin}/${page}`), {
+    ASSETS: {
+      fetch: async () => new Response(html, { headers: { "content-type": "text/html" } }),
+    },
+  });
+  const renderedHtml = await response.text();
+  for (const requiredMeta of ["og:title", "og:description", "og:image", "twitter:card"]) {
+    if (!renderedHtml.includes(requiredMeta)) throw new Error(`${page} is missing ${requiredMeta}`);
+  }
+  const image = renderedHtml.match(/<meta property="og:image" content="([^"]+)"/i)?.[1];
+  if (image !== `${testOrigin}/og.png`) {
+    throw new Error(`${page} did not render its social image from the trusted request origin`);
+  }
+  const twitterImage = renderedHtml.match(/<meta name="twitter:image" content="([^"]+)"/i)?.[1];
+  if (twitterImage !== image) {
+    throw new Error(`${page} has mismatched Open Graph and X social images`);
   }
   const links = [...html.matchAll(/(?:href|src)="([^"]+)"/g)].map((match) => match[1]);
   for (const rawLink of links) {
