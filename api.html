@@ -789,6 +789,21 @@
         border: 0;
       }
 
+      .local-backend-note {
+        margin: 0 0 18px;
+        padding: 15px 18px;
+        border: 1px solid #efd59b;
+        border-radius: 14px;
+        color: #6b562d;
+        background: var(--amber-soft);
+        font-size: 0.84rem;
+      }
+
+      .local-backend-note strong {
+        margin-right: 5px;
+        color: #80520d;
+      }
+
       @media (max-width: 980px) {
         .hero {
           grid-template-columns: 1fr;
@@ -906,6 +921,8 @@
           <a href="methodology.html">Methodology</a>
           <a href="technical.html">Technical guide</a>
           <a href="results.html">Run results</a>
+          <a href="lightgcn-results.html">LightGCN results</a>
+          <a href="lightgcn-methodology.html">LightGCN method</a>
           <a class="is-current" href="api.html" aria-current="page">Serving console</a>
         </nav>
       </header>
@@ -924,6 +941,11 @@
             <span id="connection-text">Checking service…</span>
           </div>
         </section>
+
+        <aside class="local-backend-note" role="note">
+          <strong>Local backend required.</strong>
+          The hosted copy is documentation only. Live recommendations work when this page is served by the local frontend with its <code>/api</code> proxy connected to the MultiVAE BentoML backend. LightGCN is research-only and is not exposed through this API.
+        </aside>
 
         <section class="model-strip" aria-label="Serving model information">
           <div class="model-fact">
@@ -1052,6 +1074,8 @@
         <div class="footer-links">
           <a href="technical.html#serving">API contract</a>
           <a href="results.html">Run results</a>
+          <a href="lightgcn-results.html">LightGCN results</a>
+          <a href="lightgcn-methodology.html">LightGCN method</a>
           <a href="index.html">Data atlas</a>
         </div>
       </footer>

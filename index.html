@@ -742,6 +742,8 @@
         <div class="topbar-links">
           <a class="methodology-link" href="results.html">Run results</a>
           <a class="methodology-link" href="methodology.html">Methodology / Phương pháp</a>
+          <a class="methodology-link" href="lightgcn-results.html">LightGCN results</a>
+          <a class="methodology-link" href="lightgcn-methodology.html">LightGCN method</a>
           <a class="methodology-link" href="api.html">Serving console</a>
           <a class="technical-link" href="technical.html">Technical guide ↗</a>
           <div class="status" id="data-status">
@@ -1101,7 +1103,7 @@
 
       <footer>
         <span>Source: local <code>data/processed/manifest.json</code> and <code>movies.json</code></span>
-        <span><a href="results.html">Latest run results</a> · <span id="footer-schema">Schema 1.0 · checksums recorded</span></span>
+        <span><a href="results.html">MultiVAE results</a> · <a href="lightgcn-results.html">LightGCN results</a> · <span id="footer-schema">Schema 1.0 · checksums recorded</span></span>
       </footer>
     </div>
 
@@ -1260,24 +1262,10 @@
         );
       }
 
-      async function loadData() {
-        let manifest = fallbackManifest;
-        let movies = fallbackMovies;
-        try {
-          const response = await fetch("data/processed/manifest.json", { cache: "no-store" });
-          if (response.ok) manifest = await response.json();
-        } catch (error) {
-          // The fallback keeps the page useful when opened directly from disk.
-        }
-        try {
-          const response = await fetch("data/processed/movies.json", { cache: "no-store" });
-          if (response.ok) movies = await response.json();
-        } catch (error) {
-          // The fallback keeps the sample table useful when opened directly from disk.
-        }
-        renderManifest(manifest);
-        renderGenres(movies);
-        renderMovies(movies);
+      function loadData() {
+        renderManifest(fallbackManifest);
+        renderGenres(fallbackMovies);
+        renderMovies(fallbackMovies);
       }
 
       loadData();

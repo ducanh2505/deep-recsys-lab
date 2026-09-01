@@ -1,0 +1,16 @@
+{
+  "name": "deep-recsys-research-site",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "node scripts/validate-lightgcn-report.mjs && vite build",
+    "build:preview": "SITES_CLIENT_ONLY=1 vite build",
+    "check:site": "node scripts/check-built-site.mjs"
+  },
+  "devDependencies": {
+    "@openai/sites-vite-plugin": "0.2.0",
+    "vite": "8.2.2"
+  }
+}

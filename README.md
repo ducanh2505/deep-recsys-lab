@@ -9,9 +9,9 @@ a reproducible Multi-VAE → ONNX → BentoML pipeline.
 [Results](docs/acceptance.md) · [Methodology](#methodology) · [API](#api) ·
 [Limitations](#limitations)
 
-| **0.5389 Recall@50** | **1.055× p50 speedup** | **87.58% coverage** |
+| **0.5389 Recall@50** | **1.055× p50 speedup** | **85.81% coverage** |
 | :---: | :---: | :---: |
-| Held-out test; `+0.0019` vs. the paper target | ONNX Runtime vs. PyTorch on the same host | 42 passing tests across the core package |
+| Held-out test; `+0.0019` vs. the paper target | ONNX Runtime vs. PyTorch on the same host | 54 passing tests across the core package |
 
 ## Architecture
 
@@ -34,6 +34,39 @@ The displayed round-trip time is illustrative, not benchmark evidence._
 
 **Stack:** Python 3.12 · PyTorch · Hydra · NumPy/SciPy · ONNX Runtime · BentoML ·
 Docker Compose · uv
+
+## LightGCN research track
+
+LightGCN is implemented as a separate research workflow. It uses the paper's
+64-dimensional, Xavier-initialized ego embeddings; loop-free symmetric graph
+normalization; linear neighborhood propagation; uniform layer averaging; inner
+product scoring; and BPR with L2 applied to ego embeddings. It does **not**
+register with BentoML, export to ONNX, or change the MultiVAE serving pipeline.
+
+The local experiment transfers LightGCN to MovieLens-20M; it is not a direct
+replication of the paper's Gowalla, Yelp2018, or Amazon-Book numbers. Prepare,
+run or resume the eight-hour CPU experiment, then export its verified aggregate
+report with:
+
+```bash
+deep-recsys lightgcn prepare
+deep-recsys lightgcn reproduce
+deep-recsys lightgcn report
+```
+
+The completed local run selected two propagation layers with `L2=1e-3` at
+4,000 steps. Final training on train+validation and one post-selection test
+evaluation produced `Recall@20=0.219288` and `NDCG@20=0.144056` across 136,670
+evaluable users. It completed in 14,405 seconds on an Apple M4 Mac mini with
+24 GB RAM, using CPU FP32 and eight PyTorch threads. These MovieLens values are
+reported separately from the paper's three datasets; no cross-dataset delta is
+computed.
+
+The dedicated artifact lives under `data/lightgcn`, independently of
+`data/processed`. Only the aggregate report is eligible for the research site;
+raw MovieLens data, identifiers, sparse graphs, and checkpoints remain local.
+The bilingual pages are `lightgcn-results.html` and
+`lightgcn-methodology.html`.
 
 ## One-command synthetic demo
 

@@ -22,6 +22,33 @@ Recall@50 is above the reported target. Recall@20 and NDCG@100 are below their
 reported targets; the NDCG comparison is approximate because its paper target
 is reported approximately.
 
+## Verified LightGCN transfer experiment
+
+The independent LightGCN workflow completed its bounded MovieLens-20M run in
+14,405 seconds on an Apple M4 Mac mini with 24 GB RAM. Training used CPU FP32,
+eight PyTorch threads, 64-dimensional embeddings, and batch size 262,144. The
+search selected two propagation layers with `L2=1e-3`; the best step was 4,000,
+so the winning configuration was reinitialized and trained on train+validation
+through the same step before test evaluation.
+
+| Metric | Verified MovieLens-20M test result | Evaluable users | Truth edges |
+| --- | ---: | ---: | ---: |
+| Recall@20 | `0.2192882312` | 136,670 | 943,814 |
+| NDCG@20 | `0.1440563921` | 136,670 | 943,814 |
+
+The deterministic split manifest records 136,677 users, 19,973 train-catalog
+items, 8,102,256 train edges, 943,796 validation edges, and 943,814 test edges.
+It also records removal of 417 validation and 399 test cold-start edges. The
+verified aggregate report matches the split checksums, selected configuration,
+final checkpoint, and finite test metrics. Its test-access artifact records
+that the fold was opened after model selection.
+
+This is a transfer experiment, not a direct reproduction of the LightGCN paper
+table: the paper evaluates Gowalla, Yelp2018, and Amazon-Book, not MovieLens-20M.
+The local and published values are therefore presented in separate tables with
+no cross-dataset difference. Raw GroupLens data, identifiers, sparse graphs,
+and checkpoints remain local; only the aggregate report is part of the site.
+
 ## Other completed local checks
 
 - GroupLens `ml-20m.zip` was downloaded and verified against its MD5 sidecar.
@@ -49,7 +76,7 @@ is reported approximately.
 - CI gates a repeated same-process ONNX-versus-PyTorch p50 comparison and
   requires the adaptive-batch histogram sum to exceed its count. HTTP p50/p95
   latency and throughput remain non-gating CI artifacts.
-- The local verification suite passes 42 tests with 87.58% core-package
+- The local verification suite passes 54 tests with 85.81% core-package
   coverage, strict mypy, Ruff, source and wheel builds, synthetic smoke, and a
   live Torch-free Bento OCI container check.
 

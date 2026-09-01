@@ -12,6 +12,11 @@ the sources below.
    Context.” TiiS 2015. <https://doi.org/10.1145/2827872>
 4. Prior thesis repository used as project context: the local legacy notebook
    is retained as `mulvae-cf.ipynb`; no source files are imported from it.
+5. He, X., Deng, K., Wang, X., Li, Y., Zhang, Y., and Wang, M. “LightGCN:
+   Simplifying and Powering Graph Convolution Network for Recommendation.”
+   SIGIR 2020. <https://arxiv.org/abs/2002.02126>
+6. Official LightGCN PyTorch reference implementation:
+   <https://github.com/gusye1234/LightGCN-PyTorch>
 
 MovieLens-20M is downloaded only from GroupLens. Its separate usage terms and
 non-redistribution restriction are documented in the official README linked in

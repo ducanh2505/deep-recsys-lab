@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Verified LightGCN transfer experiment results on MovieLens-20M, with sweep, training, hardware, and provenance details." />
+    <title>LightGCN Results · Deep RecSys Lab</title>
+    <link rel="stylesheet" href="/assets/lightgcn.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="shell topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">D</span><span>Deep RecSys Lab</span></a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="index.html" data-en="Data atlas" data-vi="Tổng quan dữ liệu">Data atlas</a>
+        <a href="results.html" data-en="MultiVAE results" data-vi="Kết quả MultiVAE">MultiVAE results</a>
+        <a href="lightgcn-results.html" aria-current="page" data-en="LightGCN results" data-vi="Kết quả LightGCN">LightGCN results</a>
+        <a href="lightgcn-methodology.html" data-en="LightGCN method" data-vi="Phương pháp LightGCN">LightGCN method</a>
+        <a href="technical.html" data-en="Technical" data-vi="Kỹ thuật">Technical</a>
+        <a href="api.html" data-en="Local API" data-vi="API local">Local API</a>
+      </nav>
+      <div class="lang-switch" role="group" aria-label="Language">
+        <button type="button" data-language="en" aria-pressed="true">EN</button>
+        <button type="button" data-language="vi" aria-pressed="false">VI</button>
+      </div>
+    </header>
+    <main id="main" class="shell">
+      <section class="hero" aria-labelledby="page-title">
+        <div class="hero-copy">
+          <p class="eyebrow" data-en="Transfer experiment · MovieLens-20M" data-vi="Thí nghiệm chuyển giao · MovieLens-20M">Transfer experiment · MovieLens-20M</p>
+          <h1 id="page-title" data-en="LightGCN, under a different lens." data-vi="LightGCN, qua một lăng kính khác.">LightGCN, under a different lens.</h1>
+          <p class="lede" data-en="A clean-room LightGCN implementation, tuned on validation only and evaluated once over the full unseen MovieLens catalog. Local results stay separate from the paper’s Gowalla, Yelp2018 and Amazon-Book table." data-vi="Một bản cài đặt LightGCN độc lập, chỉ tinh chỉnh trên validation và đánh giá đúng một lần trên toàn catalog MovieLens chưa quan sát. Kết quả local được tách riêng khỏi bảng Gowalla, Yelp2018 và Amazon-Book của bài báo.">A clean-room LightGCN implementation, tuned on validation only and evaluated once over the full unseen MovieLens catalog. Local results stay separate from the paper’s Gowalla, Yelp2018 and Amazon-Book table.</p>
+          <span class="scope-pill">CPU · FP32 · 8 THREADS · SEED 98765</span>
+        </div>
+        <div class="graph-card" aria-label="Illustration of a bipartite user-item graph">
+          <p class="graph-label">D<sup>−1/2</sup> A D<sup>−1/2</sup> · K LAYERS · MEAN</p>
+          <div class="graph" aria-hidden="true">
+            <span class="edge e1"></span><span class="edge e2"></span><span class="edge e3"></span><span class="edge e4"></span>
+            <span class="node n1">U₁</span><span class="node n2">U₂</span><span class="node item n3">I₁</span><span class="node item n4">I₂</span>
+          </div>
+          <p class="equation">e = mean(e⁽⁰⁾, e⁽¹⁾, …, e⁽ᴷ⁾)</p>
+        </div>
+      </section>
+      <div class="status-strip" role="status" data-report-state="pending">
+        <span class="status-tag" data-en="RUN IN PROGRESS" data-vi="ĐANG HUẤN LUYỆN">RUN IN PROGRESS</span>
+        <p class="status-copy" data-en="Verified metrics appear only after sweep, clean retrain and the one-time test evaluation complete." data-vi="Metric đã xác minh chỉ xuất hiện sau khi sweep, retrain sạch và đánh giá test đúng một lần hoàn tất.">Verified metrics appear only after sweep, clean retrain and the one-time test evaluation complete.</p>
+        <a href="lightgcn-methodology.html" data-en="Read the protocol →" data-vi="Đọc protocol →">Read the protocol →</a>
+      </div>
+      <section class="section" aria-labelledby="metrics-title">
+        <p class="section-kicker" data-en="Verified headline" data-vi="Kết quả đã xác minh">Verified headline</p>
+        <h2 id="metrics-title" data-en="One held-out fold. No second look." data-vi="Một test fold. Không xem lần hai.">One held-out fold. No second look.</h2>
+        <p class="section-intro" data-en="Until the report is cryptographically matched to the selected run, this surface refuses to display a headline number." data-vi="Cho đến khi report khớp checksum với run đã chọn, trang này từ chối hiển thị số headline.">Until the report is cryptographically matched to the selected run, this surface refuses to display a headline number.</p>
+        <div class="metric-grid">
+          <article class="metric-card" data-state="pending"><span>Recall@20</span><strong data-field="test_metrics.recall@20" data-format="metric">—</strong><small data-en="all-ranking" data-vi="xếp hạng toàn bộ">all-ranking</small></article>
+          <article class="metric-card" data-state="pending"><span>NDCG@20</span><strong data-field="test_metrics.ndcg@20" data-format="metric">—</strong><small data-en="ideal DCG denominator" data-vi="mẫu số ideal DCG">ideal DCG denominator</small></article>
+          <article class="metric-card" data-state="pending"><span data-en="Users" data-vi="Người dùng">Users</span><strong data-field="dataset.counts.users">—</strong><small data-en="eligible users" data-vi="user đủ điều kiện">eligible users</small></article>
+          <article class="metric-card" data-state="pending"><span data-en="Train edges" data-vi="Cạnh train">Train edges</span><strong data-field="dataset.counts.train_edges">—</strong><small data-en="implicit positives" data-vi="tương tác implicit">implicit positives</small></article>
+        </div>
+      </section>
+      <hr class="rule" />
+      <section class="section" aria-labelledby="selection-title">
+        <p class="section-kicker" data-en="Model selection" data-vi="Chọn mô hình">Model selection</p>
+        <h2 id="selection-title" data-en="Nine enter. Three advance. One is retrained." data-vi="Chín cấu hình. Ba đi tiếp. Một được retrain.">Nine enter. Three advance. One is retrained.</h2>
+        <p class="section-intro" data-en="Successive halving ranks configurations by validation Recall@20, then NDCG@20. The test fold has no role in this funnel." data-vi="Successive halving xếp cấu hình theo Recall@20 validation, sau đó NDCG@20. Test fold không tham gia phễu này.">Successive halving ranks configurations by validation Recall@20, then NDCG@20. The test fold has no role in this funnel.</p>
+        <div class="funnel" aria-label="Successive halving funnel">
+          <div class="funnel-step"><span data-en="Round 1 · 100 steps" data-vi="Vòng 1 · 100 bước">Round 1 · 100 steps</span><strong>9</strong><small data-en="layer × L2 pairs" data-vi="cặp layer × L2">layer × L2 pairs</small></div>
+          <span class="funnel-arrow" aria-hidden="true">→</span>
+          <div class="funnel-step"><span data-en="Round 2 · 300 total" data-vi="Vòng 2 · tổng 300">Round 2 · 300 total</span><strong>3</strong><small data-en="validation finalists" data-vi="cấu hình vòng cuối">validation finalists</small></div>
+          <span class="funnel-arrow" aria-hidden="true">→</span>
+          <div class="funnel-step is-final"><span data-en="Winner · early stop" data-vi="Cấu hình thắng · dừng sớm">Winner · early stop</span><strong>1</strong><small data-en="clean train + validation retrain" data-vi="retrain sạch train + validation">clean train + validation retrain</small></div>
+        </div>
+        <div class="table-wrap">
+          <table id="sweep-table">
+            <caption class="visually-hidden" data-en="Accessible table of successive-halving validation results" data-vi="Bảng kết quả validation của successive halving">Accessible table of successive-halving validation results</caption>
+            <thead><tr><th data-en="Stage" data-vi="Vòng">Stage</th><th data-en="Layers" data-vi="Số layer">Layers</th><th>L2</th><th data-en="Steps" data-vi="Số bước">Steps</th><th>Recall@20</th><th>NDCG@20</th></tr></thead>
+            <tbody><tr><td colspan="6" data-en="Awaiting verified aggregate report" data-vi="Đang chờ report aggregate đã xác minh">Awaiting verified aggregate report</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+      <hr class="rule" />
+      <section class="section" aria-labelledby="curve-title">
+        <p class="section-kicker" data-en="Training trajectory" data-vi="Quỹ đạo huấn luyện">Training trajectory</p>
+        <h2 id="curve-title" data-en="The validation curve chose the clock." data-vi="Đường validation quyết định thời điểm.">The validation curve chose the clock.</h2>
+        <div class="two-col">
+          <article class="panel">
+            <h3 data-en="Winner validation curve" data-vi="Đường validation của cấu hình thắng">Winner validation curve</h3>
+            <p data-en="Recall@20 drives selection; NDCG@20 breaks a tie. Values below are validation-only." data-vi="Recall@20 quyết định lựa chọn; NDCG@20 dùng để phá hòa. Các giá trị dưới đây chỉ thuộc validation.">Recall@20 drives selection; NDCG@20 breaks a tie. Values below are validation-only.</p>
+            <div class="chart-frame"><canvas id="training-chart" width="760" height="270" aria-label="Validation Recall at 20 and NDCG at 20 by training step"></canvas></div>
+            <div class="chart-legend"><span>Recall@20</span><span>NDCG@20</span></div>
+            <div class="table-wrap" style="margin-top: 18px">
+              <table id="curve-table"><caption class="visually-hidden" data-en="Table alternative for the validation curve" data-vi="Bảng thay thế cho biểu đồ validation">Table alternative for the validation curve</caption><thead><tr><th data-en="Step" data-vi="Bước">Step</th><th>Recall@20</th><th>NDCG@20</th></tr></thead><tbody><tr><td colspan="3">—</td></tr></tbody></table>
+            </div>
+          </article>
+          <aside class="panel dark">
+            <p class="section-kicker" data-en="Selected configuration" data-vi="Cấu hình đã chọn">Selected configuration</p>
+            <h3 data-en="Reinitialized for the final graph" data-vi="Khởi tạo lại cho graph cuối">Reinitialized for the final graph</h3>
+            <p data-en="After selection, embeddings and Adam state restart from scratch on train + validation for exactly the best step." data-vi="Sau khi chọn, embedding và trạng thái Adam được khởi tạo lại từ đầu trên train + validation đúng số bước tốt nhất.">After selection, embeddings and Adam state restart from scratch on train + validation for exactly the best step.</p>
+            <dl class="config-list">
+              <dt data-en="Embedding" data-vi="Embedding">Embedding</dt><dd>64</dd>
+              <dt data-en="Layers" data-vi="Số layer">Layers</dt><dd data-field="winner.layers">—</dd>
+              <dt>L2</dt><dd data-field="winner.l2">—</dd>
+              <dt data-en="Best step" data-vi="Bước tốt nhất">Best step</dt><dd data-field="best_step">—</dd>
+              <dt data-en="Batch" data-vi="Batch">Batch</dt><dd>262,144</dd>
+              <dt data-en="Optimizer" data-vi="Tối ưu">Optimizer</dt><dd>Adam · 1e−3</dd>
+            </dl>
+          </aside>
+        </div>
+      </section>
+      <hr class="rule" />
+      <section class="section" aria-labelledby="runtime-title">
+        <p class="section-kicker" data-en="Runtime & provenance" data-vi="Runtime & nguồn gốc">Runtime & provenance</p>
+        <h2 id="runtime-title" data-en="A result with its receipts attached." data-vi="Kết quả đi kèm toàn bộ biên nhận.">A result with its receipts attached.</h2>
+        <p class="section-intro" data-en="Only this aggregate report is shipped. Raw ratings, user and movie identifiers, graph matrices, and checkpoints remain local." data-vi="Chỉ report aggregate này được đưa lên site. Rating thô, định danh user/movie, ma trận graph và checkpoint vẫn ở máy local.">Only this aggregate report is shipped. Raw ratings, user and movie identifiers, graph matrices, and checkpoints remain local.</p>
+        <div class="provenance-grid">
+          <article class="provenance-card"><span data-en="Runtime" data-vi="Thời gian chạy">Runtime</span><strong id="runtime-value">—</strong></article>
+          <article class="provenance-card"><span data-en="Hardware" data-vi="Phần cứng">Hardware</span><strong id="hardware-value">CPU · FP32 · 8 threads</strong></article>
+          <article class="provenance-card"><span data-en="Dataset hash" data-vi="Hash dữ liệu">Dataset hash</span><strong data-field="provenance.dataset_hash">—</strong></article>
+          <article class="provenance-card"><span data-en="Final graph" data-vi="Graph cuối">Final graph</span><strong><span data-field="graph.nodes">—</span> nodes · <span data-field="graph.final_undirected_edges">—</span> edges</strong></article>
+          <article class="provenance-card"><span data-en="Self loops" data-vi="Self-loop">Self loops</span><strong>0 · symmetric normalization</strong></article>
+          <article class="provenance-card"><span data-en="Test protocol" data-vi="Protocol test">Test protocol</span><strong data-en="Accessed once, after selection" data-vi="Truy cập một lần, sau khi chọn">Accessed once, after selection</strong></article>
+        </div>
+        <pre class="command" aria-label="Reproduction commands">deep-recsys lightgcn prepare
+deep-recsys lightgcn reproduce
+deep-recsys lightgcn report</pre>
+        <p class="note" data-en="Scope boundary: the LightGCN paper did not report MovieLens-20M. The local metrics and the original paper table describe different datasets, so this report never calculates a cross-dataset delta." data-vi="Ranh giới phạm vi: paper LightGCN không báo cáo MovieLens-20M. Metric local và bảng paper gốc mô tả các tập dữ liệu khác nhau, vì vậy report không tính delta xuyên dataset.">Scope boundary: the LightGCN paper did not report MovieLens-20M. The local metrics and the original paper table describe different datasets, so this report never calculates a cross-dataset delta.</p>
+        <div class="source-links"><a href="https://arxiv.org/abs/2002.02126">LightGCN paper ↗</a><a href="https://github.com/gusye1234/LightGCN-PyTorch">Official PyTorch code ↗</a><a href="https://files.grouplens.org/datasets/movielens/ml-20m-README.html">MovieLens-20M README ↗</a></div>
+      </section>
+    </main>
+    <footer><div class="shell">Deep RecSys Lab · LightGCN research track · <a href="lightgcn-methodology.html" data-en="Method & paper comparison" data-vi="Phương pháp & so sánh paper">Method & paper comparison</a></div></footer>
+    <script type="module" src="/assets/lightgcn.js"></script>
+    <script type="module" src="/assets/lightgcn-results.js"></script>
+  </body>
+</html>

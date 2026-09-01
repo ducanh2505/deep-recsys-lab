@@ -705,6 +705,8 @@
           <a href="technical.html">Technical guide</a>
           <a href="api.html">Serving console</a>
           <a href="results.html" aria-current="page">Run results</a>
+          <a href="lightgcn-results.html">LightGCN results</a>
+          <a href="lightgcn-methodology.html">LightGCN method</a>
         </nav>
       </header>
 
@@ -717,6 +719,10 @@
           </p>
           <span class="run-id">multvae-20260818-224228</span>
         </section>
+
+        <p class="comparison-note">
+          <strong>Protocol boundary:</strong> this is the historical MultiVAE user-held-out run. The new <a href="lightgcn-results.html">LightGCN MovieLens experiment</a> uses per-user random interaction folds and must be read separately; no delta is calculated between them.
+        </p>
 
         <section class="headline-grid" aria-label="Run headline metrics">
           <article class="headline-card">
@@ -807,7 +813,7 @@
             </article>
           </div>
           <p class="chart-source" id="curve-source" role="status">
-            Loading all 200 records from <code>outputs/multvae-20260818-224228/metrics.jsonl</code>…
+            Curves use the deployment-safe 21-point aggregate trace embedded in this page.
           </p>
         </section>
 
@@ -905,11 +911,10 @@
             </article>
           </div>
           <div class="sources" aria-label="Run source artifacts">
-            <a class="source-link" href="outputs/multvae-20260818-224228/metrics.jsonl">metrics.jsonl</a>
-            <a class="source-link" href="outputs/multvae-20260818-224228/test_metrics.json">test_metrics.json</a>
-            <a class="source-link" href="outputs/multvae-20260818-224228/resolved_config.json">resolved_config.json</a>
-            <a class="source-link" href="outputs/multvae-20260818-224228/environment.json">environment.json</a>
-            <a class="source-link" href="README.md">paper targets in README</a>
+            <span class="source-link">embedded aggregate curve</span>
+            <span class="source-link">verified test metrics</span>
+            <a class="source-link" href="methodology.html">MultiVAE methodology</a>
+            <a class="source-link" href="lightgcn-results.html">LightGCN research track</a>
           </div>
         </section>
       </main>
@@ -919,6 +924,8 @@
         <div class="footer-links">
           <a href="methodology.html">Methodology</a>
           <a href="api.html">Serving console</a>
+          <a href="lightgcn-results.html">LightGCN results</a>
+          <a href="lightgcn-methodology.html">LightGCN method</a>
           <a href="#main">Back to top ↑</a>
         </div>
       </footer>
@@ -926,7 +933,6 @@
 
     <script>
       (() => {
-        const runMetricsPath = "outputs/multvae-20260818-224228/metrics.jsonl";
         const fallbackRows = [{"epoch":0,"train/loss":574.31416,"train/nll":574.20706,"validation/ndcg@100":0.193068,"validation/recall@20":0.163763,"validation/recall@50":0.236136},{"epoch":10,"train/loss":477.192284,"train/nll":476.265612,"validation/ndcg@100":0.408071,"validation/recall@20":0.381675,"validation/recall@50":0.521972},{"epoch":20,"train/loss":466.244164,"train/nll":464.517444,"validation/ndcg@100":0.413121,"validation/recall@20":0.38638,"validation/recall@50":0.52888},{"epoch":30,"train/loss":462.070722,"train/nll":459.670998,"validation/ndcg@100":0.414429,"validation/recall@20":0.390095,"validation/recall@50":0.530638},{"epoch":40,"train/loss":459.345268,"train/nll":456.373907,"validation/ndcg@100":0.417008,"validation/recall@20":0.391912,"validation/recall@50":0.533645},{"epoch":50,"train/loss":458.245993,"train/nll":454.797202,"validation/ndcg@100":0.418278,"validation/recall@20":0.392969,"validation/recall@50":0.533798},{"epoch":60,"train/loss":457.344763,"train/nll":453.485854,"validation/ndcg@100":0.418093,"validation/recall@20":0.392401,"validation/recall@50":0.532806},{"epoch":70,"train/loss":456.930407,"train/nll":452.721615,"validation/ndcg@100":0.419752,"validation/recall@20":0.394144,"validation/recall@50":0.53387},{"epoch":80,"train/loss":456.230788,"train/nll":451.68879,"validation/ndcg@100":0.420756,"validation/recall@20":0.393108,"validation/recall@50":0.534489},{"epoch":90,"train/loss":456.411068,"train/nll":451.561152,"validation/ndcg@100":0.420208,"validation/recall@20":0.393293,"validation/recall@50":0.535141},{"epoch":100,"train/loss":456.334563,"train/nll":451.190223,"validation/ndcg@100":0.42196,"validation/recall@20":0.396355,"validation/recall@50":0.535414},{"epoch":110,"train/loss":456.264667,"train/nll":450.834959,"validation/ndcg@100":0.420921,"validation/recall@20":0.393529,"validation/recall@50":0.532379},{"epoch":120,"train/loss":456.643155,"train/nll":450.942241,"validation/ndcg@100":0.421807,"validation/recall@20":0.395441,"validation/recall@50":0.534527},{"epoch":130,"train/loss":456.444116,"train/nll":450.488508,"validation/ndcg@100":0.422013,"validation/recall@20":0.395436,"validation/recall@50":0.535713},{"epoch":140,"train/loss":456.34845,"train/nll":450.150227,"validation/ndcg@100":0.422309,"validation/recall@20":0.397145,"validation/recall@50":0.53659},{"epoch":150,"train/loss":456.577357,"train/nll":450.146858,"validation/ndcg@100":0.423896,"validation/recall@20":0.39619,"validation/recall@50":0.536441},{"epoch":160,"train/loss":456.730311,"train/nll":450.073424,"validation/ndcg@100":0.424869,"validation/recall@20":0.39748,"validation/recall@50":0.535714},{"epoch":170,"train/loss":456.9836,"train/nll":450.114439,"validation/ndcg@100":0.423059,"validation/recall@20":0.395337,"validation/recall@50":0.535352},{"epoch":180,"train/loss":457.347754,"train/nll":450.262259,"validation/ndcg@100":0.425058,"validation/recall@20":0.397852,"validation/recall@50":0.536711},{"epoch":190,"train/loss":457.214659,"train/nll":449.935652,"validation/ndcg@100":0.423573,"validation/recall@20":0.397207,"validation/recall@50":0.537083},{"epoch":199,"train/loss":457.424124,"train/nll":449.957772,"validation/ndcg@100":0.426219,"validation/recall@20":0.397851,"validation/recall@50":0.537438}];
         const svgNamespace = "http://www.w3.org/2000/svg";
 
@@ -1047,22 +1053,8 @@
         };
 
         draw(fallbackRows);
-        fetch(runMetricsPath)
-          .then((response) => {
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            return response.text();
-          })
-          .then((text) => text.split("\n").filter(Boolean).map((line) => JSON.parse(line)))
-          .then((rows) => {
-            if (rows.length !== 200) throw new Error(`expected 200 records, received ${rows.length}`);
-            draw(rows);
-            document.getElementById("curve-source").innerHTML =
-              `Curves rendered from all <strong>${rows.length}</strong> saved records in <code>${runMetricsPath}</code>.`;
-          })
-          .catch(() => {
-            document.getElementById("curve-source").innerHTML =
-              `Curves use a 21-point embedded trace derived from <code>${runMetricsPath}</code>; serve this page beside the run artifacts to load all 200 records.`;
-          });
+        document.getElementById("curve-source").textContent =
+          "Curves use the deployment-safe 21-point aggregate trace embedded in this page.";
       })();
     </script>
   </body>

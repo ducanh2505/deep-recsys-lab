@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "deep-recsys-lab"
 version = "0.1.0"
-description = "A reproducible Multi-VAE collaborative-filtering lab with BentoML serving."
+description = "A reproducible Multi-VAE serving lab with an isolated LightGCN research track."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [

@@ -16,6 +16,10 @@ from .data.download import download_movielens20m, extract_movielens_archive
 from .data.preprocess import prepare_movielens20m
 from .device import select_device
 from .evaluation.evaluator import evaluate_model
+from .lightgcn.config import compose_lightgcn_config
+from .lightgcn.data import load_lightgcn_data, prepare_lightgcn_data
+from .lightgcn.experiment import reproduce_lightgcn
+from .lightgcn.report import export_verified_report
 from .model import build_model
 from .model.base import BaseRecommender
 from .serving.model_store import register_bento_model
@@ -27,8 +31,13 @@ app = typer.Typer(
 )
 data_app = typer.Typer(help="Download and prepare MovieLens data.", no_args_is_help=True)
 model_app = typer.Typer(help="Manage immutable BentoML models.", no_args_is_help=True)
+lightgcn_app = typer.Typer(
+    help="Prepare and reproduce the isolated LightGCN research experiment.",
+    no_args_is_help=True,
+)
 app.add_typer(data_app, name="data")
 app.add_typer(model_app, name="model")
+app.add_typer(lightgcn_app, name="lightgcn")
 
 
 def _model_from_config(config: Any, n_items: int) -> BaseRecommender:
@@ -211,6 +220,81 @@ def model_register(
         model_version=model_version,
     )
     typer.echo(str(registered.tag))
+
+
+@lightgcn_app.command("prepare")
+def lightgcn_prepare(
+    config_name: Annotated[
+        str, typer.Option("--config-name", help="Dedicated Hydra config name.")
+    ] = "lightgcn",
+    overrides: Annotated[
+        list[str] | None, typer.Argument(help="Hydra overrides for the LightGCN config.")
+    ] = None,
+    force: Annotated[
+        bool, typer.Option(help="Rebuild even when a verified artifact already exists.")
+    ] = False,
+) -> None:
+    """Prepare the deterministic implicit MovieLens split and checksums."""
+
+    config = compose_lightgcn_config(config_name, overrides)
+    output_dir = Path(config.data_dir).resolve()
+    if (output_dir / "manifest.json").exists() and not force:
+        prepared = load_lightgcn_data(output_dir)
+    else:
+        raw_dir = Path(config.data.raw_dir).resolve()
+        if (
+            not (raw_dir / "ratings.csv").exists()
+            and not (raw_dir / "ml-20m" / "ratings.csv").exists()
+            and (raw_dir / "ml-20m.zip").exists()
+        ):
+            extract_movielens_archive(raw_dir / "ml-20m.zip", raw_dir)
+        prepared = prepare_lightgcn_data(
+            raw_dir,
+            output_dir,
+            config=config.data,
+            seed=config.seed,
+        )
+    typer.echo(json.dumps(prepared.manifest, indent=2, sort_keys=True))
+
+
+@lightgcn_app.command("reproduce")
+def lightgcn_reproduce(
+    config_name: Annotated[
+        str, typer.Option("--config-name", help="Dedicated Hydra config name.")
+    ] = "lightgcn",
+    overrides: Annotated[
+        list[str] | None, typer.Argument(help="Hydra overrides; existing runs reject drift.")
+    ] = None,
+) -> None:
+    """Run or resume the bounded sweep, retrain, and one-time test evaluation."""
+
+    config = compose_lightgcn_config(config_name, overrides)
+    prepared = load_lightgcn_data(Path(config.data_dir).resolve())
+    result = reproduce_lightgcn(prepared, config, Path(config.output_dir).resolve())
+    typer.echo(json.dumps(result, indent=2, sort_keys=True))
+    if result.get("status") != "verified":
+        raise typer.Exit(code=2)
+
+
+@lightgcn_app.command("report")
+def lightgcn_report(
+    config_name: Annotated[
+        str, typer.Option("--config-name", help="Dedicated Hydra config name.")
+    ] = "lightgcn",
+    overrides: Annotated[
+        list[str] | None, typer.Argument(help="Hydra overrides matching the verified run.")
+    ] = None,
+) -> None:
+    """Verify the run and export a deployment-safe aggregate JSON report."""
+
+    config = compose_lightgcn_config(config_name, overrides)
+    prepared = load_lightgcn_data(Path(config.data_dir).resolve())
+    report = export_verified_report(
+        Path(config.output_dir).resolve(),
+        prepared,
+        Path(config.report.output).resolve(),
+    )
+    typer.echo(json.dumps(report, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":  # pragma: no cover

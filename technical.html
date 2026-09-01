@@ -933,6 +933,8 @@
           <a class="back-link" href="results.html">Run results</a>
           <a class="back-link" href="api.html">Serving console</a>
           <a class="back-link" href="methodology.html">Methodology / Phương pháp</a>
+          <a class="back-link" href="lightgcn-results.html">LightGCN results</a>
+          <a class="back-link" href="lightgcn-methodology.html">LightGCN method</a>
           <a class="back-link" href="index.html">← Dashboard</a>
           <span class="top-source"><span class="source-dot"></span><span id="source-status">Schema 1.0 · local artifact</span></span>
         </div>
@@ -1476,19 +1478,8 @@ batch[<span class="code-string">"ground_truth"</span>]   <span class="code-comme
         if (!trainUsers || !trainInteractions) return;
       }
 
-      async function loadManifest() {
-        let manifest = fallbackManifest;
-        let live = false;
-        try {
-          const response = await fetch("data/processed/manifest.json", { cache: "no-store" });
-          if (response.ok) {
-            manifest = await response.json();
-            live = true;
-          }
-        } catch (error) {
-          // The embedded snapshot keeps the reference useful when opened from disk.
-        }
-        renderManifest(manifest, live);
+      function loadManifest() {
+        renderManifest(fallbackManifest, false);
       }
 
       loadManifest();
