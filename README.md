@@ -68,6 +68,24 @@ raw MovieLens data, identifiers, sparse graphs, and checkpoints remain local.
 The bilingual pages are `lightgcn-results.html` and
 `lightgcn-methodology.html`.
 
+### Multi-VAE on Yelp2018
+
+The separate Yelp2018 track consumes the official processed split from
+LightGCN-PyTorch, derives a deterministic validation fold from official train,
+and keeps official test sealed until after successive-halving model selection
+and clean final retraining:
+
+```bash
+deep-recsys yelp2018 prepare
+deep-recsys multvae reproduce --config-name multvae_yelp2018
+deep-recsys multvae report --run-dir outputs/multvae-yelp2018-v1
+```
+
+It reports Recall/NDCG at `k ∈ {10, 20, 50, 100}` and stores epoch-level
+loss/NLL/KL/beta plus validation curves in the run directory. The aggregate
+report is `public/reports/multvae-yelp2018.json`; the bilingual research page
+is `multvae-yelp2018-results.html`.
+
 ## One-command synthetic demo
 
 No MovieLens download is required. From a fresh checkout with

@@ -112,10 +112,15 @@ def export_verified_report(run_dir: Path, data: LightGCNData, output_path: Path)
     checkpoint_config = dict(checkpoint.get("config", {}))
     if checkpoint.get("config_hash") != stable_hash(checkpoint_config):
         raise ValueError("final checkpoint config hash mismatch")
-    if int(checkpoint_config.get("layers", -1)) != int(selection["winner"]["layers"]) or float(
-        checkpoint_config.get("l2", math.nan)
-    ) != float(selection["winner"]["l2"]):
-        raise ValueError("final checkpoint winner configuration mismatch")
+    winner = dict(selection["winner"])
+    for key in ("embedding_dim", "layers", "learning_rate", "l2"):
+        if key not in winner:
+            continue
+        expected = float(winner[key]) if key in {"learning_rate", "l2"} else int(winner[key])
+        actual = checkpoint_config.get(key, math.nan)
+        actual = float(actual) if key in {"learning_rate", "l2"} else int(actual)
+        if actual != expected:
+            raise ValueError("final checkpoint winner configuration mismatch")
     sweep = _read_jsonl(run_dir / "sweep.jsonl")
     curve = _read_jsonl(run_dir / "training_curve.jsonl")
     completed_at = str(status["completed_at"])

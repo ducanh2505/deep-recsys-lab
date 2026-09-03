@@ -20,8 +20,14 @@ from .lightgcn.config import compose_lightgcn_config
 from .lightgcn.data import load_lightgcn_data, prepare_lightgcn_data
 from .lightgcn.experiment import reproduce_lightgcn
 from .lightgcn.report import export_verified_report
+from .lightgcn.yelp2018 import download_yelp2018, prepare_yelp2018_data
 from .model import build_model
 from .model.base import BaseRecommender
+from .multvae_lightgcn import (
+    compose_multvae_lightgcn_config,
+    export_multvae_report,
+    reproduce_multvae_lightgcn,
+)
 from .serving.model_store import register_bento_model
 from .training.checkpoint import load_checkpoint
 from .training.trainer import Trainer
@@ -30,14 +36,24 @@ app = typer.Typer(
     help="Reproducible Multi-VAE collaborative filtering workflow.", no_args_is_help=True
 )
 data_app = typer.Typer(help="Download and prepare MovieLens data.", no_args_is_help=True)
+yelp2018_app = typer.Typer(
+    help="Download and prepare the official processed Yelp2018 LightGCN split.",
+    no_args_is_help=True,
+)
 model_app = typer.Typer(help="Manage immutable BentoML models.", no_args_is_help=True)
 lightgcn_app = typer.Typer(
     help="Prepare and reproduce the isolated LightGCN research experiment.",
     no_args_is_help=True,
 )
+multvae_app = typer.Typer(
+    help="Run Multi-VAE experiments on alternate reproducible interaction splits.",
+    no_args_is_help=True,
+)
 app.add_typer(data_app, name="data")
+app.add_typer(yelp2018_app, name="yelp2018")
 app.add_typer(model_app, name="model")
 app.add_typer(lightgcn_app, name="lightgcn")
+app.add_typer(multvae_app, name="multvae")
 
 
 def _model_from_config(config: Any, n_items: int) -> BaseRecommender:
@@ -108,6 +124,44 @@ def data_prepare(
         f"prepared {prepared.n_train_users:,} train users x {prepared.n_items:,} items "
         f"at {prepared.root}"
     )
+
+
+@yelp2018_app.command("prepare")
+def yelp2018_prepare(
+    source_dir: Annotated[
+        Path, typer.Option(help="Directory for official processed Yelp2018 source files.")
+    ] = Path("data/raw/yelp2018"),
+    output_dir: Annotated[
+        Path, typer.Option(help="Versioned verified LightGCN-compatible split directory.")
+    ] = Path("data/lightgcn/yelp2018-v1"),
+    revision: Annotated[
+        str, typer.Option(help="Official LightGCN-PyTorch Git revision or branch.")
+    ] = "master",
+    seed: Annotated[int, typer.Option(help="Seed for the internal validation split.")] = 2020,
+    validation_ratio: Annotated[
+        float, typer.Option(help="Fraction of official train edges reserved for validation.")
+    ] = 0.1,
+    force: Annotated[
+        bool, typer.Option(help="Re-download/rebuild even when a verified artifact exists.")
+    ] = False,
+) -> None:
+    """Download official Yelp2018 files and build a leakage-safe validation split."""
+
+    source_dir = source_dir.resolve()
+    output_dir = output_dir.resolve()
+    if (output_dir / "manifest.json").exists() and not force:
+        prepared = load_lightgcn_data(output_dir)
+    else:
+        source = download_yelp2018(source_dir, revision=revision, force=force)
+        prepared = prepare_yelp2018_data(
+            source_dir,
+            output_dir,
+            seed=seed,
+            validation_ratio=validation_ratio,
+            revision=revision,
+            source=source,
+        )
+    typer.echo(json.dumps(prepared.manifest, indent=2, sort_keys=True))
 
 
 @app.command("train")
@@ -201,6 +255,40 @@ def evaluate(
     output = checkpoint.parent / "test_metrics.json"
     output.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")
     typer.echo(json.dumps(metrics, indent=2, sort_keys=True))
+
+
+@multvae_app.command("reproduce")
+def multvae_reproduce(
+    config_name: Annotated[
+        str, typer.Option("--config-name", help="Dedicated Multi-VAE experiment config name.")
+    ] = "multvae_lightgcn",
+    overrides: Annotated[
+        list[str] | None, typer.Argument(help="Hydra overrides; existing runs reject drift.")
+    ] = None,
+) -> None:
+    """Run or resume the Multi-VAE sweep on the LightGCN split."""
+
+    config = compose_multvae_lightgcn_config(config_name, overrides)
+    result = reproduce_multvae_lightgcn(config)
+    typer.echo(json.dumps(result, indent=2, sort_keys=True))
+    if result.get("status") != "verified":
+        raise typer.Exit(code=2)
+
+
+@multvae_app.command("report")
+def multvae_report(
+    run_dir: Annotated[
+        Path, typer.Option(help="Completed Multi-VAE LightGCN run directory.")
+    ] = Path("outputs/multvae-lightgcn/ml-20m-v1"),
+    output: Annotated[
+        Path | None,
+        typer.Option(help="Optional aggregate JSON destination, e.g. public/reports/...")
+    ] = None,
+) -> None:
+    """Verify a completed run and export its JSON/Markdown report."""
+
+    report = export_multvae_report(run_dir, output_path=output)
+    typer.echo(json.dumps(report, indent=2, sort_keys=True))
 
 
 @model_app.command("register")

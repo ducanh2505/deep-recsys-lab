@@ -79,9 +79,11 @@ def _register(
     *,
     version: str | None = None,
 ) -> Any:
+    root = prepared_data.root
+    assert root is not None
     return register_bento_model(
         _checkpoint(prepared_data, tmp_path),
-        prepared_data.root,
+        root,
         model_version=version or f"test-{uuid4().hex}",
     )
 
@@ -199,7 +201,7 @@ def test_non_finite_onnx_output_fails_validation(
     root = Path(registered.path)
     model_path = root / ONNX_FILENAME
     original = onnx.load(model_path)
-    shape = ["batch", prepared_data.n_items]
+    shape: list[str | int] = ["batch", prepared_data.n_items]
     graph = onnx.helper.make_graph(
         [onnx.helper.make_node("Mul", ["interactions", "nan"], ["logits"])],
         "non_finite_test",
@@ -261,6 +263,7 @@ def test_incompatible_checkpoint_shapes_fail_registration(
     }
 
     with pytest.raises(ModelArtifactError, match="shapes do not match"):
+        assert prepared_data.root is not None
         register_bento_model(
             incompatible,
             prepared_data.root,
@@ -273,6 +276,7 @@ def test_registered_onnx_matches_pytorch_for_dynamic_batches(
     prepared_data: PreparedData, tmp_path: Path
 ) -> None:
     checkpoint = _checkpoint(prepared_data, tmp_path)
+    assert prepared_data.root is not None
     registered = register_bento_model(
         checkpoint,
         prepared_data.root,

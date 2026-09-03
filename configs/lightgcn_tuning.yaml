@@ -1,0 +1,50 @@
+seed: 98765
+device: cpu
+data_dir: data/lightgcn/ml-20m-v1
+output_dir: outputs/lightgcn/ml-20m-v2
+
+data:
+  name: movielens20m
+  raw_dir: data/raw
+  positive_rating_threshold: 4.0
+  min_positive_ratings: 5
+  validation_ratio: 0.1
+  test_ratio: 0.1
+  expected_counts:
+    users: 136677
+    items: 19973
+    train_edges: 8102256
+    validation_edges: 943796
+    test_edges: 943814
+
+# Vanilla LightGCN architecture families: embedding size x propagation depth.
+model:
+  embedding_dim: 64
+  layers: 2
+
+training:
+  learning_rate: 0.001
+  batch_size: 262144
+  threads: 8
+  max_steps: 4000
+  minimum_steps: 500
+  validation_every: 50
+  patience: 10
+  wall_time_hours: 8.0
+  checkpoint_every: 50
+
+sweep:
+  embedding_dims: [32, 64, 128]
+  layers: [1, 2, 3, 4]
+  learning_rates: [0.0005, 0.001, 0.002]
+  l2_values: [0.0001, 0.001, 0.01]
+  round1_steps: 50
+  round2_steps: 300
+  finalists: 6
+
+evaluation:
+  k: 20
+  user_batch_size: 512
+
+report:
+  output: public/reports/lightgcn-v2.json

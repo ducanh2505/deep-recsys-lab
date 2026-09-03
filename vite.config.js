@@ -12,6 +12,7 @@ const pages = [
   "api.html",
   "lightgcn-results.html",
   "lightgcn-methodology.html",
+  "multvae-yelp2018-results.html",
 ];
 
 const sitesWorker = {

@@ -1,4 +1,4 @@
-"""Deterministic MovieLens implicit-feedback preparation for LightGCN."""
+"""Deterministic implicit-feedback preparation for LightGCN-style experiments."""
 
 from __future__ import annotations
 
@@ -113,6 +113,100 @@ def _assert_expected(counts: dict[str, int], expected: dict[str, int]) -> None:
     for key, value in expected.items():
         if key in counts and counts[key] != value:
             raise ValueError(f"prepared count mismatch for {key}: {counts[key]} != {value}")
+
+
+def prepare_lightgcn_from_splits(
+    train: sp.csr_matrix,
+    validation: sp.csr_matrix,
+    test: sp.csr_matrix,
+    user_ids: np.ndarray,
+    item_ids: np.ndarray,
+    output_dir: Path,
+    *,
+    dataset: str,
+    protocol: str,
+    seed: int,
+    config: dict[str, Any] | None = None,
+    source: dict[str, Any] | None = None,
+    counts_extra: dict[str, int] | None = None,
+    expected_counts: dict[str, int] | None = None,
+) -> LightGCNData:
+    """Persist explicit binary train/validation/test matrices as a verified artifact.
+
+    The helper is used by datasets that already provide an official train/test
+    split, such as Yelp2018.  ``validation`` is kept separate so model
+    selection never needs to inspect the official test fold.
+    """
+
+    matrices = {
+        "train": train.tocsr().astype(np.float32),
+        "validation": validation.tocsr().astype(np.float32),
+        "test": test.tocsr().astype(np.float32),
+    }
+    if not (matrices["train"].shape == matrices["validation"].shape == matrices["test"].shape):
+        raise ValueError("train/validation/test matrices must have identical shapes")
+    if matrices["train"].shape != (len(user_ids), len(item_ids)):
+        raise ValueError("ID arrays do not match split matrix shape")
+    for name, matrix in matrices.items():
+        matrix.sum_duplicates()
+        matrix.sort_indices()
+        if matrix.nnz and not np.all(np.isin(matrix.data, [0.0, 1.0])):
+            raise ValueError(f"{name} matrix must contain binary interactions")
+        matrix.data.fill(1.0)
+    if _overlap(matrices["train"], matrices["validation"]):
+        raise ValueError("train/validation leakage detected")
+    if _overlap(matrices["train"], matrices["test"]):
+        raise ValueError("train/test leakage detected")
+    if _overlap(matrices["validation"], matrices["test"]):
+        raise ValueError("validation/test leakage detected")
+    user_ids = np.asarray(user_ids)
+    item_ids = np.asarray(item_ids)
+    if len(np.unique(user_ids)) != len(user_ids) or len(np.unique(item_ids)) != len(item_ids):
+        raise ValueError("user and item IDs must be unique")
+    if np.any(np.diff(matrices["train"].tocsc().indptr) == 0):
+        raise ValueError("catalog contains an item absent from training")
+
+    counts_manifest = {
+        "users": int(matrices["train"].shape[0]),
+        "items": int(matrices["train"].shape[1]),
+        "train_edges": int(matrices["train"].nnz),
+        "validation_edges": int(matrices["validation"].nnz),
+        "test_edges": int(matrices["test"].nnz),
+        "validation_users": int(np.count_nonzero(np.diff(matrices["validation"].indptr))),
+        "test_users": int(np.count_nonzero(np.diff(matrices["test"].indptr))),
+    }
+    if counts_extra:
+        counts_manifest.update({str(key): int(value) for key, value in counts_extra.items()})
+    _assert_expected(counts_manifest, expected_counts or {})
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for name, matrix in matrices.items():
+        sp.save_npz(output_dir / f"{name}.npz", matrix, compressed=True)
+    np.save(output_dir / ID_FILES[0], user_ids, allow_pickle=False)
+    np.save(output_dir / ID_FILES[1], item_ids, allow_pickle=False)
+    file_hashes = {name: sha256_file(output_dir / name) for name in (*MATRIX_FILES, *ID_FILES)}
+    manifest: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "dataset": dataset,
+        "protocol": protocol,
+        "seed": int(seed),
+        "config": config or {},
+        "counts": counts_manifest,
+        "source": source or {"kind": "in-memory-test-fixture"},
+        "files": file_hashes,
+        "content_hashes": {
+            "train": _csr_hash(matrices["train"]),
+            "validation": _csr_hash(matrices["validation"]),
+            "test": _csr_hash(matrices["test"]),
+            "user_ids": _array_hash(user_ids),
+            "item_ids": _array_hash(item_ids),
+        },
+    }
+    manifest["dataset_hash"] = stable_hash(_dataset_hash_basis(manifest))
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return load_lightgcn_data(output_dir)
 
 
 def prepare_lightgcn_from_frame(

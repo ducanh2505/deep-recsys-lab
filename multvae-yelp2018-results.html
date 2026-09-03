@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Verified Multi-VAE retraining results on the official Yelp2018 LightGCN split, including tuning, loss curves, Recall@k and NDCG@k." />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Deep RecSys Lab" />
+    <meta property="og:title" content="Deep RecSys Lab — Multi-VAE on Yelp2018" />
+    <meta property="og:description" content="Verified Multi-VAE Yelp2018 results with successive-halving tuning, loss curves, Recall@10/20/50/100 and NDCG@10/20/50/100." />
+    <meta property="og:image" content="__SITE_ORIGIN__/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Deep RecSys Lab — Multi-VAE on Yelp2018" />
+    <meta name="twitter:description" content="Verified Multi-VAE Yelp2018 results with tuning, loss curves and ranking metrics." />
+    <meta name="twitter:image" content="__SITE_ORIGIN__/og.png" />
+    <title>Multi-VAE Yelp2018 Results · Deep RecSys Lab</title>
+    <link rel="stylesheet" href="/assets/lightgcn.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="shell topbar">
+      <a class="brand" href="index.html"><span class="brand-mark">D</span><span>Deep RecSys Lab</span></a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="index.html" data-en="Data atlas" data-vi="Tổng quan dữ liệu">Data atlas</a>
+        <a href="results.html" data-en="MultiVAE results" data-vi="Kết quả MultiVAE">MultiVAE results</a>
+        <a href="multvae-yelp2018-results.html" aria-current="page" data-en="Yelp2018 Multi-VAE" data-vi="Multi-VAE Yelp2018">Yelp2018 Multi-VAE</a>
+        <a href="lightgcn-results.html" data-en="LightGCN results" data-vi="Kết quả LightGCN">LightGCN results</a>
+        <a href="lightgcn-methodology.html" data-en="Method" data-vi="Phương pháp">Method</a>
+        <a href="technical.html" data-en="Technical" data-vi="Kỹ thuật">Technical</a>
+      </nav>
+      <div class="lang-switch" role="group" aria-label="Language">
+        <button type="button" data-language="en" aria-pressed="true">EN</button>
+        <button type="button" data-language="vi" aria-pressed="false">VI</button>
+      </div>
+    </header>
+    <main id="main" class="shell">
+      <section class="hero" aria-labelledby="page-title">
+        <div class="hero-copy">
+          <p class="eyebrow" data-en="Verified experiment · official Yelp2018 split" data-vi="Thí nghiệm đã xác minh · split Yelp2018 chính thức">Verified experiment · official Yelp2018 split</p>
+          <h1 id="page-title" data-en="Multi-VAE meets Yelp2018." data-vi="Multi-VAE trên Yelp2018.">Multi-VAE meets Yelp2018.</h1>
+          <p class="lede" data-en="A fresh Multi-VAE run on the processed Yelp2018 train/test files released with LightGCN. Thirty-two configurations enter successive halving; the winner is retrained on train + validation and the official test fold is opened once." data-vi="Một lần chạy Multi-VAE mới trên file train/test Yelp2018 đã xử lý, được phát hành cùng LightGCN. Ba mươi hai cấu hình đi qua successive halving; cấu hình thắng được retrain trên train + validation và official test chỉ được mở một lần.">A fresh Multi-VAE run on the processed Yelp2018 train/test files released with LightGCN. Thirty-two configurations enter successive halving; the winner is retrained on train + validation and the official test fold is opened once.</p>
+          <span class="scope-pill">MULTI-VAE · ALL-RANKING · K = 10 / 20 / 50 / 100</span>
+        </div>
+        <div class="graph-card" aria-label="Illustration of Multi-VAE encoder decoder">
+          <p class="graph-label" data-en="SPARSE USER VECTOR · LATENT SAMPLE · ITEM LOGITS" data-vi="VECTOR USER SPARSE · LATENT SAMPLE · LOGIT ITEM">SPARSE USER VECTOR · LATENT SAMPLE · ITEM LOGITS</p>
+          <div class="layer-stack" aria-hidden="true">
+            <div class="layer-chip"><b>x</b><span>Observed items</span><small>l2-normalized</small></div>
+            <div class="layer-arrow">↓ encoder</div>
+            <div class="layer-chip"><b>z</b><span>μ + σ ⊙ ε</span><small>200 dims</small></div>
+            <div class="layer-arrow">↓ decoder</div>
+            <div class="layer-chip"><b>ŷ</b><span>Full item logits</span><small>all-ranking</small></div>
+          </div>
+        </div>
+      </section>
+      <div class="status-strip" role="status" data-report-state="pending">
+        <span class="status-tag" data-en="REPORT PENDING" data-vi="ĐANG CHỜ REPORT">REPORT PENDING</span>
+        <p class="status-copy" data-en="The page reveals metrics only when the aggregate report is a verified run." data-vi="Trang chỉ hiển thị metric khi aggregate report thuộc một run đã xác minh.">The page reveals metrics only when the aggregate report is a verified run.</p>
+        <a href="lightgcn-methodology.html" data-en="Read the protocol →" data-vi="Đọc protocol →">Read the protocol →</a>
+      </div>
+
+      <section class="section" aria-labelledby="metrics-title">
+        <p class="section-kicker" data-en="Held-out test" data-vi="Test held-out">Held-out test</p>
+        <h2 id="metrics-title" data-en="Four cutoffs. One sealed test fold." data-vi="Bốn cutoff. Một test fold được niêm phong.">Four cutoffs. One sealed test fold.</h2>
+        <p class="section-intro" data-en="All-ranking metrics use the full Yelp2018 catalog after masking the user’s observed train + validation items. The test fold is never used for tuning." data-vi="Metric all-ranking dùng toàn bộ catalog Yelp2018 sau khi mask item đã quan sát trong train + validation. Test fold không tham gia tuning.">All-ranking metrics use the full Yelp2018 catalog after masking the user’s observed train + validation items. The test fold is never used for tuning.</p>
+        <div class="metric-grid">
+          <article class="metric-card" data-state="pending"><span>Recall@10</span><strong id="recall-10">—</strong><small data-en="test · all-ranking" data-vi="test · xếp hạng toàn bộ">test · all-ranking</small></article>
+          <article class="metric-card" data-state="pending"><span>Recall@20</span><strong id="recall-20">—</strong><small data-en="selection cutoff" data-vi="cutoff chọn model">selection cutoff</small></article>
+          <article class="metric-card" data-state="pending"><span>NDCG@20</span><strong id="ndcg-20">—</strong><small data-en="ideal DCG denominator" data-vi="mẫu số ideal DCG">ideal DCG denominator</small></article>
+          <article class="metric-card" data-state="pending"><span>NDCG@100</span><strong id="ndcg-100">—</strong><small data-en="test · all-ranking" data-vi="test · xếp hạng toàn bộ">test · all-ranking</small></article>
+        </div>
+        <div class="table-wrap" style="margin-top: 18px">
+          <table id="test-table">
+            <caption class="visually-hidden" data-en="Yelp2018 test Recall and NDCG at all requested cutoffs" data-vi="Recall và NDCG test Yelp2018 tại mọi cutoff yêu cầu">Yelp2018 test Recall and NDCG at all requested cutoffs</caption>
+            <thead><tr><th>k</th><th>Recall@k</th><th>NDCG@k</th></tr></thead>
+            <tbody><tr><td colspan="3" data-en="Awaiting verified aggregate report" data-vi="Đang chờ aggregate report">Awaiting verified aggregate report</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+      <hr class="rule" />
+
+      <section class="section" aria-labelledby="tuning-title">
+        <p class="section-kicker" data-en="Hyper-parameter tuning" data-vi="Tuning hyper-parameter">Hyper-parameter tuning</p>
+        <h2 id="tuning-title" data-en="Thirty-two candidates. Validation decides." data-vi="Ba mươi hai cấu hình. Validation quyết định.">Thirty-two candidates. Validation decides.</h2>
+        <p class="section-intro" data-en="Successive halving uses validation Recall@20, then NDCG@20 as a deterministic tie-break. The official test fold is absent from every selection stage." data-vi="Successive halving dùng Recall@20 validation, sau đó NDCG@20 để phá hòa. Official test fold vắng mặt ở mọi giai đoạn chọn model.">Successive halving uses validation Recall@20, then NDCG@20 as a deterministic tie-break. The official test fold is absent from every selection stage.</p>
+        <div class="funnel" aria-label="Successive halving funnel">
+          <div class="funnel-step"><span data-en="Round 1 · 20 epochs" data-vi="Vòng 1 · 20 epoch">Round 1 · 20 epochs</span><strong>32</strong><small data-en="full Cartesian sweep" data-vi="toàn bộ Cartesian sweep">full Cartesian sweep</small></div>
+          <span class="funnel-arrow" aria-hidden="true">→</span>
+          <div class="funnel-step"><span data-en="Round 2 · 60 epochs" data-vi="Vòng 2 · 60 epoch">Round 2 · 60 epochs</span><strong>8</strong><small data-en="validation finalists" data-vi="cấu hình vào vòng sau">validation finalists</small></div>
+          <span class="funnel-arrow" aria-hidden="true">→</span>
+          <div class="funnel-step is-final"><span data-en="Final · up to 200" data-vi="Cuối · tối đa 200">Final · up to 200</span><strong>2 → 1</strong><small data-en="early stop + clean retrain" data-vi="dừng sớm + retrain sạch">early stop + clean retrain</small></div>
+        </div>
+        <div class="table-wrap">
+          <table id="sweep-table">
+            <caption class="visually-hidden" data-en="Successive-halving sweep results" data-vi="Kết quả sweep successive halving">Successive-halving sweep results</caption>
+            <thead><tr><th data-en="Stage" data-vi="Vòng">Stage</th><th data-en="Trial" data-vi="Cấu hình">Trial</th><th data-en="Epoch" data-vi="Epoch">Epoch</th><th>Recall@20</th><th>NDCG@20</th><th>Recall@100</th><th>NDCG@100</th></tr></thead>
+            <tbody><tr><td colspan="7">—</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+      <hr class="rule" />
+
+      <section class="section" aria-labelledby="curve-title">
+        <p class="section-kicker" data-en="Training & evaluation trace" data-vi="Trace huấn luyện & đánh giá">Training & evaluation trace</p>
+        <h2 id="curve-title" data-en="Loss falls. Validation chooses the stop." data-vi="Loss giảm. Validation chọn điểm dừng.">Loss falls. Validation chooses the stop.</h2>
+        <div class="two-col">
+          <article class="panel">
+            <h3 data-en="Winner full-stage loss" data-vi="Loss full-stage của cấu hình thắng">Winner full-stage loss</h3>
+            <p data-en="The chart preserves epoch-level loss, NLL, KL and annealing beta for the selected candidate." data-vi="Biểu đồ lưu loss, NLL, KL và beta annealing theo epoch của cấu hình được chọn.">The chart preserves epoch-level loss, NLL, KL and annealing beta for the selected candidate.</p>
+            <div class="chart-frame"><canvas id="loss-chart" width="760" height="270" aria-label="Winner Multi-VAE training loss, negative log likelihood and KL by epoch"></canvas></div>
+            <div class="chart-legend"><span>Loss</span><span>NLL</span><span>KL</span></div>
+          </article>
+          <article class="panel">
+            <h3 data-en="Validation selection curve" data-vi="Đường validation chọn model">Validation selection curve</h3>
+            <p data-en="Recall@20 drives the choice; NDCG@20 is the tie-break. Final test scores are rendered separately." data-vi="Recall@20 quyết định; NDCG@20 dùng để phá hòa. Điểm test cuối được hiển thị riêng.">Recall@20 drives the choice; NDCG@20 is the tie-break. Final test scores are rendered separately.</p>
+            <div class="chart-frame"><canvas id="validation-chart" width="760" height="270" aria-label="Validation Recall at 20 and NDCG at 20 by epoch"></canvas></div>
+            <div class="chart-legend"><span>Recall@20</span><span>NDCG@20</span></div>
+          </article>
+        </div>
+        <div class="table-wrap" style="margin-top: 18px">
+          <table id="curve-table">
+            <caption class="visually-hidden" data-en="Winner training and validation curve records" data-vi="Bản ghi đường cong huấn luyện và validation">Winner training and validation curve records</caption>
+            <thead><tr><th data-en="Epoch" data-vi="Epoch">Epoch</th><th>Loss</th><th>NLL</th><th>KL</th><th>Beta</th><th>Recall@20</th><th>NDCG@20</th></tr></thead>
+            <tbody><tr><td colspan="7">—</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+      <hr class="rule" />
+
+      <section class="section" aria-labelledby="comparison-title">
+        <p class="section-kicker" data-en="Paper context" data-vi="Bối cảnh paper">Paper context</p>
+        <h2 id="comparison-title" data-en="Same benchmark family. Clear boundaries." data-vi="Cùng họ benchmark. Ranh giới rõ ràng.">Same benchmark family. Clear boundaries.</h2>
+        <p class="section-intro" data-en="Published LightGCN paper values are shown only as references. This task retrains Multi-VAE; it does not claim a fresh local LightGCN baseline or a cross-split delta." data-vi="Số liệu paper LightGCN chỉ được hiển thị để tham chiếu. Task này retrain Multi-VAE; không tuyên bố có LightGCN baseline local mới hay delta giữa các split.">Published LightGCN paper values are shown only as references. This task retrains Multi-VAE; it does not claim a fresh local LightGCN baseline or a cross-split delta.</p>
+        <div class="two-col">
+          <article class="panel">
+            <span class="compare-label" data-en="Selected configuration" data-vi="Cấu hình được chọn">Selected configuration</span>
+            <h3 data-en="Final model receipt" data-vi="Biên nhận model cuối">Final model receipt</h3>
+            <dl class="config-list">
+              <dt data-en="Architecture" data-vi="Kiến trúc">Architecture</dt><dd id="winner-architecture">—</dd>
+              <dt data-en="Dropout" data-vi="Dropout">Dropout</dt><dd id="winner-dropout">—</dd>
+              <dt data-en="Beta cap" data-vi="Beta cap">Beta cap</dt><dd id="winner-beta">—</dd>
+              <dt data-en="Learning rate" data-vi="Learning rate">Learning rate</dt><dd id="winner-lr">—</dd>
+              <dt data-en="Weight decay" data-vi="Weight decay">Weight decay</dt><dd id="winner-wd">—</dd>
+              <dt data-en="Selected epoch" data-vi="Epoch được chọn">Selected epoch</dt><dd id="best-epoch">—</dd>
+            </dl>
+          </article>
+          <article class="panel">
+            <h3 data-en="Paper Table 4 · Yelp2018" data-vi="Paper Bảng 4 · Yelp2018">Paper Table 4 · Yelp2018</h3>
+            <p data-en="Reference values from the LightGCN paper, not a local rerun." data-vi="Số liệu tham chiếu từ paper LightGCN, không phải lần chạy local.">Reference values from the LightGCN paper, not a local rerun.</p>
+            <div class="table-wrap">
+              <table id="paper-table"><thead><tr><th>Method</th><th>Recall@20</th><th>NDCG@20</th></tr></thead><tbody><tr><td>Mult-VAE</td><td>.0584</td><td>.0450</td></tr><tr class="winner-row"><td>LightGCN</td><td>.0649</td><td>.0530</td></tr></tbody></table>
+            </div>
+          </article>
+        </div>
+      </section>
+      <hr class="rule" />
+
+      <section class="section" aria-labelledby="runtime-title">
+        <p class="section-kicker" data-en="Receipts & reproducibility" data-vi="Biên nhận & tái lập">Receipts & reproducibility</p>
+        <h2 id="runtime-title" data-en="Aggregate metrics are public. Raw IDs stay local." data-vi="Metric aggregate công khai. ID thô ở local.">Aggregate metrics are public. Raw IDs stay local.</h2>
+        <p class="section-intro" data-en="The deployed JSON contains metrics, curves, sweep summaries, hashes and environment metadata. It does not contain user IDs, item IDs, raw source files or checkpoints." data-vi="JSON deploy chỉ chứa metric, curve, tóm tắt sweep, hash và metadata môi trường. Không chứa user ID, item ID, source thô hay checkpoint.">The deployed JSON contains metrics, curves, sweep summaries, hashes and environment metadata. It does not contain user IDs, item IDs, raw source files or checkpoints.</p>
+        <div class="provenance-grid">
+          <article class="provenance-card"><span data-en="Runtime" data-vi="Thời gian chạy">Runtime</span><strong id="runtime-value">—</strong></article>
+          <article class="provenance-card"><span data-en="Device" data-vi="Thiết bị">Device</span><strong id="hardware-value">—</strong></article>
+          <article class="provenance-card"><span data-en="Dataset hash" data-vi="Hash dữ liệu">Dataset hash</span><strong id="dataset-hash">—</strong></article>
+          <article class="provenance-card"><span data-en="Users × items" data-vi="Users × items">Users × items</span><strong id="catalog-value">—</strong></article>
+          <article class="provenance-card"><span data-en="Test access" data-vi="Truy cập test">Test access</span><strong data-en="Once · after selection" data-vi="Một lần · sau khi chọn">Once · after selection</strong></article>
+          <article class="provenance-card"><span data-en="Report hash" data-vi="Hash report">Report hash</span><strong id="report-hash">—</strong></article>
+        </div>
+        <pre class="command" aria-label="Reproduction commands">deep-recsys yelp2018 prepare
+deep-recsys multvae reproduce --config-name multvae_yelp2018
+deep-recsys multvae report --run-dir outputs/multvae-yelp2018-v1</pre>
+        <div class="two-col" style="margin-top: 18px">
+          <article class="panel">
+            <h3 data-en="Test metrics by cutoff" data-vi="Metric test theo cutoff">Test metrics by cutoff</h3>
+            <div class="chart-frame"><canvas id="test-chart" width="760" height="270" aria-label="Yelp2018 test Recall and NDCG by cutoff"></canvas></div>
+            <div class="chart-legend"><span>Recall@k</span><span>NDCG@k</span></div>
+          </article>
+          <article class="panel dark">
+            <p class="section-kicker" data-en="Data protocol" data-vi="Protocol dữ liệu">Data protocol</p>
+            <h3 data-en="Official train/test, internal validation" data-vi="Train/test chính thức, validation nội bộ">Official train/test, internal validation</h3>
+            <p data-en="Validation is a deterministic 10% carve-out from official train with catalog coverage preserved. Official test remains untouched until after model selection and clean final retraining." data-vi="Validation là carve-out deterministic 10% từ official train, vẫn giữ coverage catalog. Official test không đổi cho tới sau model selection và retrain cuối sạch.">Validation is a deterministic 10% carve-out from official train with catalog coverage preserved. Official test remains untouched until after model selection and clean final retraining.</p>
+            <div class="source-links"><a href="https://arxiv.org/abs/2002.02126">LightGCN paper ↗</a><a href="https://github.com/gusye1234/LightGCN-PyTorch">Official processed data ↗</a></div>
+          </article>
+        </div>
+      </section>
+    </main>
+    <footer><div class="shell">Deep RecSys Lab · Yelp2018 Multi-VAE research track · <a href="lightgcn-methodology.html" data-en="Method & paper context" data-vi="Phương pháp & bối cảnh paper">Method & paper context</a></div></footer>
+    <script type="module" src="/assets/lightgcn.js"></script>
+    <script type="module" src="/assets/multvae-yelp2018-results.js"></script>
+  </body>
+</html>

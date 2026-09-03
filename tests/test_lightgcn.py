@@ -21,6 +21,7 @@ from deep_recsys_lab.lightgcn.config import (
     LightGCNReportConfig,
     LightGCNSweepConfig,
     LightGCNTrainingConfig,
+    compose_lightgcn_config,
 )
 from deep_recsys_lab.lightgcn.data import (
     load_lightgcn_data,
@@ -282,3 +283,19 @@ def test_lightgcn_config_does_not_mutate_multivae_model_schema() -> None:
     changed = replace(config, model=LightGCNModelConfig(embedding_dim=16, layers=4))
     assert changed.model.layers == 4
     assert "layers" not in ModelConfig.__dataclass_fields__
+
+
+def test_tuning_config_resolves_architecture_and_optimizer_search_space() -> None:
+    config = compose_lightgcn_config("lightgcn_tuning")
+    assert config.sweep.embedding_dims == (32, 64, 128)
+    assert config.sweep.layers == (1, 2, 3, 4)
+    assert config.sweep.learning_rates == (5e-4, 1e-3, 2e-3)
+    assert config.sweep.l2_values == (1e-4, 1e-3, 1e-2)
+    assert config.sweep.finalists == 6
+
+
+def test_candidate_identifier_disambiguates_extended_search_dimensions() -> None:
+    legacy = Candidate(2, 1e-3)
+    extended = Candidate(2, 1e-3, embedding_dim=128, learning_rate=5e-4)
+    assert legacy.identifier == "layers-2_l2-1e-03"
+    assert extended.identifier == "dim-128_layers-2_lr-5e-04_l2-1e-03"

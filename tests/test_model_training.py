@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from deep_recsys_lab.data.dataset import InteractionDataset
+from deep_recsys_lab.data.types import PreparedData
 from deep_recsys_lab.evaluation.evaluator import evaluate_model
 from deep_recsys_lab.model.multvae import MultiVAE
 from deep_recsys_lab.reproducibility import seed_everything
@@ -67,7 +68,7 @@ def test_checkpoint_restores_state_and_rng(tmp_path: Path) -> None:
     assert torch.equal(expected_random, torch.rand(3))
 
 
-def test_evaluation_sampling_and_metrics(prepared_data) -> None:
+def test_evaluation_sampling_and_metrics(prepared_data: PreparedData) -> None:
     model = MultiVAE(
         n_items=prepared_data.n_items, hidden_dims=(8, 4, 8), latent_dim=4, dropout=0.0
     )

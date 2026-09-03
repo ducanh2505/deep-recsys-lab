@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/validate-lightgcn-report.mjs && vite build",
+    "build": "node scripts/validate-lightgcn-report.mjs && node scripts/validate-multvae-yelp2018-report.mjs && vite build",
     "build:preview": "SITES_CLIENT_ONLY=1 vite build",
     "check:site": "node scripts/check-built-site.mjs"
   },

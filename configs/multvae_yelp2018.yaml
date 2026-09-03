@@ -1,0 +1,31 @@
+seed: 2020
+device: auto
+data_dir: data/lightgcn/yelp2018-v1
+run_dir: outputs/multvae-yelp2018-v1
+baseline_checkpoint: null
+baseline_data_dir: null
+lightgcn_metrics_path: null
+report_output: public/reports/multvae-yelp2018.json
+
+batch_size: 500
+num_workers: 0
+latent_dim: 200
+input_normalization: l2
+total_anneal_steps: 200000
+round1_epochs: 20
+round2_epochs: 60
+max_epochs: 200
+round2_finalists: 8
+final_candidates: 2
+validation_every: 1
+patience: 10
+checkpoint_every: 5
+selection_k: 20
+evaluation_ks: [10, 20, 50, 100]
+
+sweep:
+  architectures: [[600, 200, 600], [400, 200, 400]]
+  dropout: [0.0, 0.5]
+  beta_cap: [0.2, 0.8]
+  learning_rate: [0.0005, 0.001]
+  weight_decay: [0.0, 0.00001]

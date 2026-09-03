@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 from ..model.base import BaseRecommender
-from .metrics import ndcg_at_k, recall_at_k, topk_unseen
+from .metrics import RankingProtocol, ndcg_at_k, ranking_batch_stats, recall_at_k, topk_unseen
 
 
 def _batch_tensors(batch: Any) -> tuple[torch.Tensor, torch.Tensor]:
@@ -30,14 +30,17 @@ def evaluate_model(
     ks: tuple[int, ...] = (20, 50, 100),
     mask_seen: bool = True,
     max_batches: int | None = None,
+    ranking_protocol: RankingProtocol = "multvae",
 ) -> dict[str, float]:
     """Evaluate only fold-out positives, masking fold-in items first."""
 
     model_device = torch.device(device)
     was_training = model.training
     model.eval()
-    totals: dict[str, list[tuple[float, int]]] = {f"recall@{k}": [] for k in ks}
-    totals.update({f"ndcg@{k}": [] for k in ks})
+    totals: dict[str, list[float]] = {f"recall@{k}": [0.0, 0.0] for k in ks}
+    totals.update({f"ndcg@{k}": [0.0, 0.0] for k in ks})
+    evaluated_users = 0
+    truth_edges = 0
     with torch.inference_mode():
         for batch_number, batch in enumerate(loader):
             if max_batches is not None and batch_number >= max_batches:
@@ -47,23 +50,35 @@ def evaluate_model(
             truth = truth.to(model_device, dtype=torch.float32)
             scores = model(data, sample=False).logits
             for k in ks:
-                batch_size = int(data.shape[0])
-                totals[f"recall@{k}"].append(
-                    (recall_at_k(scores, truth, k, data if mask_seen else None), batch_size)
+                stats = ranking_batch_stats(
+                    scores,
+                    truth,
+                    k,
+                    data if mask_seen else None,
+                    protocol=ranking_protocol,
                 )
-                totals[f"ndcg@{k}"].append(
-                    (ndcg_at_k(scores, truth, k, data if mask_seen else None), batch_size)
+                weight = (
+                    int(stats["evaluated_users"])
+                    if ranking_protocol == "lightgcn"
+                    else int(data.shape[0])
                 )
+                totals[f"recall@{k}"][0] += float(stats["recall"]) * weight
+                totals[f"recall@{k}"][1] += weight
+                totals[f"ndcg@{k}"][0] += float(stats["ndcg"]) * weight
+                totals[f"ndcg@{k}"][1] += weight
+                if ranking_protocol == "lightgcn" and k == ks[0]:
+                    evaluated_users += int(stats["evaluated_users"])
+                    truth_edges += int(stats["truth_edges"])
     if was_training:
         model.train()
-    return {
-        name: float(
-            sum(value * count for value, count in values) / sum(count for _, count in values)
-        )
-        if values
-        else 0.0
+    result = {
+        name: float(values[0] / values[1]) if values[1] > 0 else 0.0
         for name, values in totals.items()
     }
+    if ranking_protocol == "lightgcn":
+        result["evaluated_users"] = float(evaluated_users)
+        result["truth_edges"] = float(truth_edges)
+    return result
 
 
 def recommend(

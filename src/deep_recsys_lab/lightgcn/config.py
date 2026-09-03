@@ -43,7 +43,12 @@ class LightGCNTrainingConfig:
 
 @dataclass(frozen=True)
 class LightGCNSweepConfig:
+    # Empty values preserve the original single-architecture behavior and make
+    # the base config backward compatible. A tuning config can provide several
+    # embedding sizes and learning rates to form a Cartesian search space.
+    embedding_dims: tuple[int, ...] = ()
     layers: tuple[int, ...] = (2, 3, 4)
+    learning_rates: tuple[float, ...] = ()
     l2_values: tuple[float, ...] = (1e-5, 1e-4, 1e-3)
     round1_steps: int = 100
     round2_steps: int = 300
@@ -123,7 +128,13 @@ def to_lightgcn_config(config: DictConfig | dict[str, Any]) -> LightGCNConfig:
             checkpoint_every=int(training.get("checkpoint_every", 50)),
         ),
         sweep=LightGCNSweepConfig(
+            embedding_dims=tuple(
+                int(value) for value in sweep.get("embedding_dims", ())
+            ),
             layers=tuple(int(value) for value in sweep.get("layers", (2, 3, 4))),
+            learning_rates=tuple(
+                float(value) for value in sweep.get("learning_rates", ())
+            ),
             l2_values=tuple(float(value) for value in sweep.get("l2_values", (1e-5, 1e-4, 1e-3))),
             round1_steps=int(sweep.get("round1_steps", 100)),
             round2_steps=int(sweep.get("round2_steps", 300)),
@@ -147,10 +158,36 @@ def compose_lightgcn_config(
     config = to_lightgcn_config(compose_hydra_config(config_name, overrides or ()))
     if config.device != "cpu":
         raise ValueError("LightGCN reproduction is pinned to CPU for sparse FP32 propagation")
-    if config.model.embedding_dim <= 0 or min(config.sweep.layers) < 1:
+    if (
+        config.model.embedding_dim <= 0
+        or not config.sweep.layers
+        or min(config.sweep.layers) < 1
+        or any(value <= 0 for value in config.sweep.embedding_dims)
+    ):
         raise ValueError("embedding_dim and all layer counts must be positive")
+    if any(value <= 0 for value in config.sweep.learning_rates):
+        raise ValueError("all sweep learning rates must be positive")
+    if any(value < 0 for value in config.sweep.l2_values):
+        raise ValueError("all sweep L2 values must be non-negative")
     if config.training.batch_size <= 0 or config.training.wall_time_hours <= 0:
         raise ValueError("batch_size and wall_time_hours must be positive")
+    if (
+        config.training.learning_rate <= 0
+        or config.training.max_steps <= 0
+        or config.training.minimum_steps <= 0
+        or config.training.minimum_steps > config.training.max_steps
+        or config.training.validation_every <= 0
+        or config.training.patience <= 0
+        or config.training.checkpoint_every <= 0
+    ):
+        raise ValueError("training horizons and intervals must be positive and ordered")
+    if (
+        config.sweep.round1_steps <= 0
+        or config.sweep.round1_steps > config.sweep.round2_steps
+        or config.sweep.round2_steps <= 0
+        or config.sweep.finalists <= 0
+    ):
+        raise ValueError("sweep stages must be positive and ordered")
     if config.data.validation_ratio <= 0 or config.data.test_ratio <= 0:
         raise ValueError("validation_ratio and test_ratio must be positive")
     if config.data.validation_ratio + config.data.test_ratio >= 1:

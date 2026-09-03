@@ -10,6 +10,7 @@ const pages = [
   "api.html",
   "lightgcn-results.html",
   "lightgcn-methodology.html",
+  "multvae-yelp2018-results.html",
 ];
 
 async function exists(path) {
@@ -21,7 +22,13 @@ async function exists(path) {
   }
 }
 
-for (const required of [...pages, "reports/lightgcn.json", "og.png", "server/index.js"]) {
+for (const required of [
+  ...pages,
+  "reports/lightgcn.json",
+  "reports/multvae-yelp2018.json",
+  "og.png",
+  "server/index.js",
+]) {
   if (!(await exists(required))) throw new Error(`Missing built site asset: ${required}`);
 }
 
@@ -68,4 +75,17 @@ const report = JSON.parse(await readFile(new URL("reports/lightgcn.json", root),
 if (report.status !== "verified") throw new Error("Built LightGCN report is not verified");
 if (!Number.isFinite(report.test_metrics?.["recall@20"])) {
   throw new Error("Built LightGCN report lacks a finite Recall@20");
+}
+const multvaeReport = JSON.parse(
+  await readFile(new URL("reports/multvae-yelp2018.json", root), "utf8"),
+);
+if (multvaeReport.status !== "verified") {
+  throw new Error("Built Multi-VAE Yelp2018 report is not verified");
+}
+for (const k of [10, 20, 50, 100]) {
+  for (const prefix of ["recall", "ndcg"]) {
+    if (!Number.isFinite(multvaeReport.test_metrics?.[`${prefix}@${k}`])) {
+      throw new Error(`Built Multi-VAE report lacks finite ${prefix}@${k}`);
+    }
+  }
 }

@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from deep_recsys_lab.data.dataset import InteractionDataset
+from deep_recsys_lab.data.types import PreparedData
 from deep_recsys_lab.device import select_device
 from deep_recsys_lab.evaluation.evaluator import evaluate_model, recommend
 from deep_recsys_lab.model.multvae import MultiVAE
@@ -78,7 +79,9 @@ def test_evaluator_tuple_batches_and_recommendation() -> None:
     assert evaluate_model(model, [], ks=(1,)) == {"recall@1": 0.0, "ndcg@1": 0.0}
 
 
-def test_trainer_resume_and_notebook_compatibility(prepared_data, tmp_path: Path) -> None:
+def test_trainer_resume_and_notebook_compatibility(
+    prepared_data: PreparedData, tmp_path: Path
+) -> None:
     train_loader = DataLoader(InteractionDataset(prepared_data.train), batch_size=2, shuffle=True)
     validation_loader = DataLoader(
         InteractionDataset(

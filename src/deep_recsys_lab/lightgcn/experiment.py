@@ -36,10 +36,19 @@ class DeadlineExceeded(RuntimeError):
 class Candidate:
     layers: int
     l2: float
+    embedding_dim: int | None = None
+    learning_rate: float | None = None
 
     @property
     def identifier(self) -> str:
-        return f"layers-{self.layers}_l2-{self.l2:.0e}"
+        parts = []
+        if self.embedding_dim is not None:
+            parts.append(f"dim-{self.embedding_dim}")
+        parts.append(f"layers-{self.layers}")
+        if self.learning_rate is not None:
+            parts.append(f"lr-{self.learning_rate:.0e}")
+        parts.append(f"l2-{self.l2:.0e}")
+        return "_".join(parts)
 
 
 @dataclass(frozen=True)
@@ -158,13 +167,40 @@ def _candidate_config(
     return {
         "dataset_hash": dataset_hash,
         "seed": config.seed,
-        "embedding_dim": config.model.embedding_dim,
+        "embedding_dim": (
+            candidate.embedding_dim
+            if candidate.embedding_dim is not None
+            else config.model.embedding_dim
+        ),
         "layers": candidate.layers,
         "l2": candidate.l2,
-        "learning_rate": config.training.learning_rate,
+        "learning_rate": (
+            candidate.learning_rate
+            if candidate.learning_rate is not None
+            else config.training.learning_rate
+        ),
         "batch_size": config.training.batch_size,
         "device": "cpu",
         "precision": "fp32",
+    }
+
+
+def _candidate_record(candidate: Candidate, config: LightGCNConfig) -> dict[str, int | float]:
+    """Return the fully resolved candidate settings for JSON artifacts."""
+
+    return {
+        "embedding_dim": int(
+            candidate.embedding_dim
+            if candidate.embedding_dim is not None
+            else config.model.embedding_dim
+        ),
+        "layers": int(candidate.layers),
+        "learning_rate": float(
+            candidate.learning_rate
+            if candidate.learning_rate is not None
+            else config.training.learning_rate
+        ),
+        "l2": float(candidate.l2),
     }
 
 
@@ -192,7 +228,7 @@ def _build_model(observed: sp.csr_matrix, config: LightGCNConfig, candidate: Can
     return LightGCN(
         observed.shape[0],
         observed.shape[1],
-        config.model.embedding_dim,
+        candidate.embedding_dim or config.model.embedding_dim,
         candidate.layers,
         adjacency,
     )
@@ -216,7 +252,8 @@ def _train_to_step(
     config_hash = stable_hash(candidate_config)
     seed_everything(config.seed)
     model = _build_model(observed, config, candidate)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.training.learning_rate)
+    learning_rate = candidate.learning_rate or config.training.learning_rate
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     sampler = BPRSampler(observed, config.seed)
     step = 0
     best_step = 0
@@ -367,13 +404,17 @@ def _train_to_step(
 def _rank_candidates(
     results: list[tuple[Candidate, dict[str, float | int]]], k: int
 ) -> list[tuple[Candidate, dict[str, float | int]]]:
-    def key(value: tuple[Candidate, dict[str, float | int]]) -> tuple[float, float, int, float]:
+    def key(
+        value: tuple[Candidate, dict[str, float | int]]
+    ) -> tuple[float, float, int, int, float, float]:
         candidate, metrics = value
         return (
             -float(metrics[f"recall@{k}"]),
             -float(metrics[f"ndcg@{k}"]),
             candidate.layers,
-            abs(math.log10(candidate.l2) + 4.0),
+            candidate.embedding_dim or 0,
+            abs(math.log10(candidate.l2) + 3.0) if candidate.l2 > 0 else math.inf,
+            candidate.learning_rate or 0.0,
         )
 
     return sorted(results, key=key)
@@ -413,7 +454,7 @@ def _run_sweep_stage(
             raise RuntimeError("sweep candidate did not produce validation metrics")
         record = {
             "stage": stage,
-            "candidate": {"layers": candidate.layers, "l2": candidate.l2},
+            "candidate": _candidate_record(candidate, config),
             "step": outcome.step,
             "metrics": outcome.metrics,
         }
@@ -474,9 +515,22 @@ def reproduce_lightgcn(data: LightGCNData, config: LightGCNConfig, run_dir: Path
         },
     )
     deadline = _deadline(status, config)
+    embedding_dims = config.sweep.embedding_dims or (config.model.embedding_dim,)
+    learning_rates = config.sweep.learning_rates or (config.training.learning_rate,)
     candidates = [
-        Candidate(layers, l2) for layers in config.sweep.layers for l2 in config.sweep.l2_values
+        Candidate(
+            layers=layers,
+            l2=l2,
+            embedding_dim=embedding_dim if config.sweep.embedding_dims else None,
+            learning_rate=learning_rate if config.sweep.learning_rates else None,
+        )
+        for embedding_dim in embedding_dims
+        for layers in config.sweep.layers
+        for learning_rate in learning_rates
+        for l2 in config.sweep.l2_values
     ]
+    if config.sweep.finalists > len(candidates):
+        raise ValueError("sweep finalists cannot exceed the number of candidates")
     try:
         _set_phase(status_path, status, "sweep-round-1")
         round1 = _run_sweep_stage(
@@ -504,7 +558,7 @@ def reproduce_lightgcn(data: LightGCNData, config: LightGCNConfig, run_dir: Path
             [
                 {
                     "stage": stage,
-                    "candidate": {"layers": candidate.layers, "l2": candidate.l2},
+                    "candidate": _candidate_record(candidate, config),
                     "step": target_steps,
                     "metrics": metrics,
                 }
@@ -521,7 +575,7 @@ def reproduce_lightgcn(data: LightGCNData, config: LightGCNConfig, run_dir: Path
             {
                 "selected_at": _utc_now(),
                 "criterion": [f"recall@{config.evaluation.k}", f"ndcg@{config.evaluation.k}"],
-                "winner": {"layers": winner.layers, "l2": winner.l2},
+                "winner": _candidate_record(winner, config),
                 "round1_finalists": [item.identifier for item in finalists],
             },
         )
@@ -618,7 +672,7 @@ def reproduce_lightgcn(data: LightGCNData, config: LightGCNConfig, run_dir: Path
                 "phase": "complete",
                 "completed_at": _utc_now(),
                 "updated_at": _utc_now(),
-                "winner": {"layers": winner.layers, "l2": winner.l2},
+                "winner": _candidate_record(winner, config),
                 "best_step": winner_outcome.best_step,
                 "validation_metrics": winner_outcome.best_metrics,
                 "test_metrics": test_metrics,

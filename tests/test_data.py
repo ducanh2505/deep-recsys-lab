@@ -5,10 +5,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import torch
 
 from deep_recsys_lab.config import DatasetConfig
 from deep_recsys_lab.data.dataset import InteractionDataset, load_prepared_data
 from deep_recsys_lab.data.preprocess import prepare_from_rows
+from deep_recsys_lab.data.types import PreparedData
 
 
 def _rows() -> pd.DataFrame:
@@ -72,12 +74,14 @@ def test_interaction_dataset_split_is_repeatable() -> None:
     assert not torch_equal(first[0]["data"], first[0]["ground_truth"])
 
 
-def torch_equal(first, second) -> bool:
+def torch_equal(first: torch.Tensor, second: torch.Tensor) -> bool:
     return bool((first == second).all().item())
 
 
-def test_prepared_checksum_is_checked(prepared_data) -> None:
-    path = prepared_data.root / "train.npz"
+def test_prepared_checksum_is_checked(prepared_data: PreparedData) -> None:
+    root = prepared_data.root
+    assert root is not None
+    path = root / "train.npz"
     path.write_bytes(path.read_bytes() + b"tampered")
     with pytest.raises(ValueError, match="checksum"):
-        load_prepared_data(prepared_data.root)
+        load_prepared_data(root)
