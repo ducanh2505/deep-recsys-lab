@@ -1,0 +1,5 @@
+name: lightgcn
+parameters:
+  embedding_dim: 32
+  layers: 2
+  l2: 0.0001

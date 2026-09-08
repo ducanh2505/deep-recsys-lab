@@ -1,43 +1,62 @@
 from __future__ import annotations
 
-import os
-import tempfile
+from collections.abc import Callable
 from pathlib import Path
-
-os.environ.setdefault("BENTOML_HOME", tempfile.mkdtemp(prefix="deep-recsys-pytest-"))
 
 import pandas as pd
 import pytest
 
-from deep_recsys_lab.config import DatasetConfig
-from deep_recsys_lab.data.preprocess import prepare_from_rows
-from deep_recsys_lab.data.types import PreparedData
+from recsys.artifacts import LoadedArtifact, RuntimeSpec, write_artifact
+from recsys.conf.schema import ColumnsConfig, DatasetConfig, SplitConfig
+from recsys.core.paths import WorkspacePaths
+from recsys.core.types import QueryMode
+from recsys.datasets.prepare import prepare_frame
+from recsys.datasets.types import PreparedDataset
 
 
-@pytest.fixture()
-def prepared_data(tmp_path: Path) -> PreparedData:
-    rows = [
-        {"userId": user, "movieId": movie, "rating": 5.0}
-        for user in range(1, 9)
-        for movie in range(1, 11)
-        if (user * movie) % 4 != 0
-    ]
-    movies = pd.DataFrame(
-        {
-            "movieId": list(range(1, 11)),
-            "title": [f"Movie {movie}" for movie in range(1, 11)],
-            "genres": ["Drama" if movie % 2 else "Comedy" for movie in range(1, 11)],
-        }
+@pytest.fixture
+def interaction_frame() -> pd.DataFrame:
+    records: list[dict[str, object]] = []
+    for user in range(5):
+        for offset in range(6):
+            item = (user * 2 + offset) % 10
+            records.append(
+                {
+                    "user_id": user if user % 2 == 0 else f"user-{user}",
+                    "item_id": item if item % 2 == 0 else f"item-{item}",
+                    "value": float(offset + 1),
+                    "timestamp": pd.Timestamp("2024-01-01", tz="UTC")
+                    + pd.Timedelta(user * 10 + offset, unit="D"),
+                    "category": f"category-{item % 3}",
+                }
+            )
+    return pd.DataFrame(records)
+
+
+@pytest.fixture
+def prepared(interaction_frame: pd.DataFrame) -> PreparedDataset:
+    config = DatasetConfig(
+        name="tabular",
+        columns=ColumnsConfig(value="value", timestamp="timestamp"),
+        split=SplitConfig(strategy="temporal", validation_ratio=0.2, test_ratio=0.2),
     )
-    return prepare_from_rows(
-        pd.DataFrame(rows),
-        tmp_path / "processed",
-        movies=movies,
-        config=DatasetConfig(
-            name="synthetic",
-            min_positive_ratings=3,
-            n_validation_users=2,
-            n_test_users=2,
-            strict_user_counts=True,
-        ),
-    )
+    return prepare_frame(interaction_frame, config)
+
+
+@pytest.fixture
+def popularity_artifact(tmp_path: Path, prepared: PreparedDataset) -> Callable[..., LoadedArtifact]:
+    def factory(*, capabilities: tuple[QueryMode, ...] = tuple(QueryMode)) -> LoadedArtifact:
+        scores = prepared.train.sum(axis=0).A1.astype("float32")
+        return write_artifact(
+            tmp_path / "models",
+            RuntimeSpec("popularity", "popularity", capabilities, {"global_scores": scores}),
+            prepared,
+            {"model": {"name": "popularity"}},
+        )
+
+    return factory
+
+
+@pytest.fixture
+def workspace(tmp_path: Path) -> WorkspacePaths:
+    return WorkspacePaths.from_value(tmp_path).ensure()

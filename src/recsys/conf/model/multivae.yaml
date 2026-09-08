@@ -1,0 +1,5 @@
+name: multivae
+parameters:
+  hidden_dim: 64
+  latent_dim: 32
+  dropout: 0.2

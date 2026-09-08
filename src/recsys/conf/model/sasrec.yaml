@@ -1,0 +1,6 @@
+name: sasrec
+parameters:
+  embedding_dim: 32
+  layers: 2
+  max_length: 50
+  dropout: 0.1

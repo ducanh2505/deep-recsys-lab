@@ -1,0 +1,21 @@
+dataset:
+  name: tabular
+  path: var/data/raw/interactions.csv
+  format: csv
+  columns:
+    user_id: user_id
+    item_id: item_id
+    value: value
+    timestamp: timestamp
+  split:
+    strategy: user_holdout
+    validation_ratio: 0.1
+    test_ratio: 0.2
+    seed: 42
+
+model:
+  name: lightgcn
+  parameters:
+    embedding_dim: 64
+    layers: 2
+    l2: 0.0001

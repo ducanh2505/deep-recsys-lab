@@ -1,0 +1,35 @@
+defaults:
+  - dataset: synthetic
+  - model: multivae
+  - _self_
+
+workspace_root: .
+
+retrieval:
+  components: [popularity, itemknn]
+  parameters: {}
+
+fusion:
+  name: rrf
+  weights: {}
+  parameters:
+    rank_constant: 60
+
+reranker:
+  name: none
+  parameters: {}
+
+training:
+  seed: 42
+  epochs: 2
+  batch_size: 128
+  learning_rate: 0.001
+  device: cpu
+
+evaluation:
+  top_k: 10
+
+serving:
+  host: 0.0.0.0
+  port: 3000
+  max_body_bytes: 65536

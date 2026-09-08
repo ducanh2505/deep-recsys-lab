@@ -3,22 +3,18 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "deep-recsys-lab"
+name = "recsys-platform"
 version = "0.1.0"
-description = "A reproducible Multi-VAE serving lab with an isolated LightGCN research track."
+description = "Composable infrastructure for training, evaluating, and serving recommendation systems."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "hydra-core>=1.3.2,<2",
-  "bentoml>=1.4.39,<1.5",
   "numpy>=1.26,<3",
-  "onnx>=1.22,<2",
-  "onnxruntime>=1.29,<2",
-  "onnxscript>=0.7,<1",
   "pandas>=2.2,<3",
+  "pyarrow>=17,<24",
   "pydantic>=2.7,<3",
   "scipy>=1.13,<2",
-  "tensorboard>=2.18,<3",
   "typer>=0.12,<1",
 ]
 
@@ -28,25 +24,36 @@ dependencies = [
 cpu = ["torch>=2.5,<3"]
 mps = ["torch>=2.5,<3"]
 cu126 = ["torch>=2.5,<3"]
+train = [
+  "onnx>=1.22,<2",
+  "onnxscript>=0.7,<1",
+]
+hybrid = [
+  "httpx>=0.27,<1",
+  "lightgbm>=4.5,<5",
+]
+serve = [
+  "bentoml>=1.4.39,<1.5",
+  "httpx>=0.27,<1",
+  "onnxruntime>=1.29,<2",
+]
 dev = [
   "coverage[toml]>=7.6,<8",
-  "httpx2>=1",
-  "matplotlib>=3.9,<4",
+  "httpx>=0.27,<1",
   "mypy>=1.13,<2",
-  "nbformat>=5.10,<6",
+  "build>=1.2,<2",
   "pytest>=8.3,<9",
   "pytest-asyncio>=0.24,<1",
   "pytest-cov>=5,<6",
   "ruff>=0.8,<1",
-  "starlette>=0.40,<1",
   "types-PyYAML>=6,<7",
 ]
 
 [project.scripts]
-deep-recsys = "deep_recsys_lab.cli:app"
+recsys = "recsys.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/deep_recsys_lab"]
+packages = ["src/recsys"]
 
 [tool.uv]
 conflicts = [
@@ -75,7 +82,6 @@ explicit = true
 target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
-extend-exclude = ["mulvae-cf.ipynb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
@@ -102,11 +108,10 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["deep_recsys_lab"]
+source = ["recsys"]
 omit = [
-  "src/deep_recsys_lab/cli.py",
-  "src/deep_recsys_lab/data/download.py",
-  "src/deep_recsys_lab/smoke.py",
+  "src/recsys/cli/*",
+  "src/recsys/serving/bento.py",
 ]
 
 [tool.coverage.report]

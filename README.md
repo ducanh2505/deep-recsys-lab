@@ -1,346 +1,103 @@
-# deep-recsys-lab
+# recsys-platform
 
-[![CI](https://github.com/ducanh2505/deep-recsys-lab/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ducanh2505/deep-recsys-lab/actions/workflows/ci.yml)
+`recsys-platform` is a Python toolkit for building recommendation systems as composable
+software. It provides generic interaction-data contracts, deterministic preparation,
+model and retriever plugins, hybrid fusion, immutable artifacts, offline evaluation,
+and a framework-neutral serving engine.
 
-Implicit-feedback recommenders are easy to reproduce incorrectly and hard to ship reliably;
-deep-recsys-lab turns MovieLens-20M histories into deterministic unseen-movie rankings through
-a reproducible Multi-VAE → ONNX → BentoML pipeline.
-
-[Results](docs/acceptance.md) · [Methodology](#methodology) · [API](#api) ·
-[Limitations](#limitations)
-
-| **0.5389 Recall@50** | **1.055× p50 speedup** | **85.81% coverage** |
-| :---: | :---: | :---: |
-| Held-out test; `+0.0019` vs. the paper target | ONNX Runtime vs. PyTorch on the same host | 54 passing tests across the core package |
+The repository is intentionally dataset-agnostic. Local MovieLens and Yelp readers are
+available as integrations, while the core accepts any CSV or Parquet interaction table
+that can be mapped to `user_id` and `item_id`.
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    source["MovieLens 20M<br/>or synthetic interactions"] --> prep["Seeded preparation<br/>CSR matrices + manifest"]
-    prep --> train["PyTorch Multi-VAE<br/>Hydra training"]
-    train --> eval["Held-out ranking<br/>Recall + NDCG"]
-    train --> checkpoint["best.pt"]
-    checkpoint --> register["Immutable registration<br/>ONNX opset 20 + schema-v3 checksums"]
-    register --> store["Bento Model Store"]
-    store --> serve["BentoML + ONNX Runtime<br/>adaptive CPU batching"]
-    serve --> clients["Recommendation API<br/>health, metrics, serving console"]
-```
-
-![Deep RecSys Lab serving console with a ready ONNX model, a MovieLens test profile, and ranked unseen-movie recommendations.](docs/assets/serving-console.png)
-
-_A real top-10 request against `deep_recsys:multvae-onnx-v1` and its 20,108-item catalog.
-The displayed round-trip time is illustrative, not benchmark evidence._
-
-**Stack:** Python 3.12 · PyTorch · Hydra · NumPy/SciPy · ONNX Runtime · BentoML ·
-Docker Compose · uv
-
-## LightGCN research track
-
-LightGCN is implemented as a separate research workflow. It uses the paper's
-64-dimensional, Xavier-initialized ego embeddings; loop-free symmetric graph
-normalization; linear neighborhood propagation; uniform layer averaging; inner
-product scoring; and BPR with L2 applied to ego embeddings. It does **not**
-register with BentoML, export to ONNX, or change the MultiVAE serving pipeline.
-
-The local experiment transfers LightGCN to MovieLens-20M; it is not a direct
-replication of the paper's Gowalla, Yelp2018, or Amazon-Book numbers. Prepare,
-run or resume the eight-hour CPU experiment, then export its verified aggregate
-report with:
-
-```bash
-deep-recsys lightgcn prepare
-deep-recsys lightgcn reproduce
-deep-recsys lightgcn report
-```
-
-The completed local run selected two propagation layers with `L2=1e-3` at
-4,000 steps. Final training on train+validation and one post-selection test
-evaluation produced `Recall@20=0.219288` and `NDCG@20=0.144056` across 136,670
-evaluable users. It completed in 14,405 seconds on an Apple M4 Mac mini with
-24 GB RAM, using CPU FP32 and eight PyTorch threads. These MovieLens values are
-reported separately from the paper's three datasets; no cross-dataset delta is
-computed.
-
-The dedicated artifact lives under `data/lightgcn`, independently of
-`data/processed`. Only the aggregate report is eligible for the research site;
-raw MovieLens data, identifiers, sparse graphs, and checkpoints remain local.
-The bilingual pages are `lightgcn-results.html` and
-`lightgcn-methodology.html`.
-
-### Multi-VAE on Yelp2018
-
-The separate Yelp2018 track consumes the official processed split from
-LightGCN-PyTorch, derives a deterministic validation fold from official train,
-and keeps official test sealed until after successive-halving model selection
-and clean final retraining:
-
-```bash
-deep-recsys yelp2018 prepare
-deep-recsys multvae reproduce --config-name multvae_yelp2018
-deep-recsys multvae report --run-dir outputs/multvae-yelp2018-v1
-```
-
-It reports Recall/NDCG at `k ∈ {10, 20, 50, 100}` and stores epoch-level
-loss/NLL/KL/beta plus validation curves in the run directory. The aggregate
-report is `public/reports/multvae-yelp2018.json`; the bilingual research page
-is `multvae-yelp2018-results.html`.
-
-## One-command synthetic demo
-
-No MovieLens download is required. From a fresh checkout with
-[uv](https://docs.astral.sh/uv/) installed, run:
-
-```bash
-uv run --extra cpu python -m deep_recsys_lab.smoke --output-dir /tmp/deep-recsys-smoke
-```
-
-The bounded train → register → serve workflow finishes with:
-
 ```text
-smoke acceptance: PASS
+interaction table
+      │
+      ▼
+prepare ──► deterministic mappings + declared split
+      │
+      ▼
+train ────► model, retriever, or composed hybrid plugin
+      │
+      ▼
+artifact ─► schema + checksums + content-derived SHA-256 identity
+      │
+      ├────────► evaluate against held-out interactions
+      └────────► serve through RecommendationEngine and optional BentoML
 ```
+
+Generated data, runs, artifacts, and caches live under `var/` and are never source
+artifacts. The project homepage is an independent vanilla Vite app under `apps/site`.
 
 ## Install
 
-Python 3.12 is required. Install one and only one accelerator extra:
+Python 3.12 and [uv](https://docs.astral.sh/uv/) are supported. Choose one accelerator
+extra and add only the capabilities you use:
 
 ```bash
-uv sync --extra cpu --extra dev       # CPU, CI, and serving
-uv sync --extra mps --extra dev       # Apple Silicon MPS training
-uv sync --extra cu126 --extra dev     # CUDA 12.6 training
+uv sync --extra cpu --extra train --extra hybrid --extra serve --extra dev
 ```
 
-The mutually exclusive extras follow uv's explicit PyTorch index guidance.
-`device=auto` selects CUDA, then MPS, then CPU; a requested unavailable device
-fails with a useful error. ONNX, ONNX Script, and ONNX Runtime are core
-dependencies because model registration exports and validates the production
-artifact on every accelerator configuration.
+Use `mps` or `cu126` instead of `cpu` for the matching PyTorch runtime.
 
-<a id="methodology"></a>
+## Quickstart
 
-## Train, evaluate, register, and serve
-
-Training and evaluation are unchanged. Serving requires an explicit immutable
-version; `latest` is intentionally rejected.
+Run a bounded synthetic train–evaluate pipeline without downloading a dataset:
 
 ```bash
-deep-recsys data download --root data/raw
-deep-recsys data prepare --input-dir data/raw/ml-20m --output-dir data/processed
-deep-recsys train --config-name config dataset=movielens20m
-deep-recsys evaluate --checkpoint outputs/multvae/best.pt --data-dir data/processed
-
-deep-recsys model register \
-  --checkpoint outputs/multvae/best.pt \
-  --data-dir data/processed \
-  --model-version multvae-onnx-v1
-
-bentoml serve src/service.py:RecommendationService \
-  --arg model_tag=deep_recsys:multvae-onnx-v1 \
-  --port 3000
+uv run recsys plugins list
+uv run recsys --workspace-root . run \
+  dataset=synthetic \
+  model=multivae \
+  training.epochs=1
 ```
 
-Registration loads the PyTorch checkpoint on CPU, exports deterministic FP32
-logits to ONNX opset 20, and verifies numerical and unseen-ranking parity before
-committing the model. The Model Store artifact contains `model.onnx`, ordered
-item IDs, movie metadata, configuration, metrics, and a checksum-validated
-schema-v3 manifest. Registering the same version twice fails instead of
-overwriting it. Service startup revalidates the checksums, ONNX metadata,
-dynamic-batch I/O contract, CPU execution provider, and a finite probe inference.
+The command writes run state under `var/runs/` and an immutable artifact under
+`var/models/multivae/<sha256-digest>/`. It does not create a `latest` alias.
 
-Schema-v2 PyTorch-only model tags cannot be rebuilt with this service because
-the production image no longer contains Torch. Re-register their original
-checkpoints under a new immutable version; already-built schema-v2 containers
-continue to run unchanged.
-
-<a id="api"></a>
-
-### API
-
-The public serving endpoints are:
-
-- `POST /recommend` with `{ "movie_ids": [...], "top_k": 20 }`
-- `POST /model_info`
-- `GET /livez`, `GET /readyz`, and `GET /metrics`
-- generated BentoML API documentation at `/`
-
-Set `DEEP_RECSYS_API_KEY` to require `X-API-Key` on `/recommend` and
-`/model_info`. Probes, metrics, and generated documentation remain
-unauthenticated. Recommendation request bodies are capped at 64 KiB.
-`/model_info` reports the artifact schema together with
-`inference_backend=onnxruntime`, `execution_provider=CPUExecutionProvider`, and
-`onnx_opset=20`.
-
-## Run the backend and serving console with Docker Compose
-
-Compose builds local source-serving images for the BentoML backend and the
-standalone serving console. Register a schema-v3 ONNX model first; the default
-configuration expects `deep_recsys:multvae-onnx-v1` in `$HOME/bentoml/models`.
-Schema-v2 tags such as `deep_recsys:multvae-v1` are not compatible with the
-current ONNX-only Service.
+Prepare a generic table with an external configuration:
 
 ```bash
-cp .env.example .env
-docker compose up --build
+uv run recsys --config examples/configs/tabular.yaml data prepare
 ```
 
-The default local URLs are:
+Configuration precedence is packaged defaults, optional external YAML, then repeatable
+CLI dotlist overrides (`--set key=value`) or trailing Hydra-style overrides on commands
+that compose configuration.
 
-- serving console and same-origin API proxy: `http://127.0.0.1:8080`
-- BentoML API documentation: `http://127.0.0.1:3000`
-- backend readiness probe: `http://127.0.0.1:3000/readyz`
+## Serve an artifact
 
-Edit `.env` to select another explicit `MODEL_TAG`, a custom
-`BENTOML_HOST_HOME`, different ports, or an optional `DEEP_RECSYS_API_KEY`.
-The host store's `models` directory is mounted read-only, and both published
-ports bind to loopback by default. If authentication is enabled, enter the same
-API key in the serving console. To inspect startup failures or stop the stack:
+Install the `serve` extra, then pass the artifact directory explicitly:
 
 ```bash
-docker compose logs backend
-docker compose down
+uv run recsys serve --artifact var/models/multivae/<sha256-digest>
 ```
 
-The frontend waits for the backend readiness check. A missing or incompatible
-model therefore makes the backend exit and prevents the console from starting;
-the backend logs contain the model-loading error.
+The API accepts exactly one of a known `user_id` or a non-empty interaction history.
+It exposes `POST /recommend`, `GET /model`, `/livez`, `/readyz`, and `/metrics`.
+Set `RECSYS_API_KEY` to require `X-API-Key` on recommendation and model endpoints.
 
-## Build and containerize for production
+## Documentation
 
-For a self-contained production backend image, BentoML owns the Python 3.12 CPU
-image and OCI generation. The Compose Dockerfiles intentionally serve source
-and mount a host model store; the production flow below embeds the immutable
-model artifact into the generated image instead.
+- [Architecture](docs/architecture.md)
+- [Data contract](docs/data-contract.md)
+- [Configuration and plugins](docs/configuration-and-plugins.md)
+- [Serving](docs/serving.md)
+- [Built-in models and retrievers](docs/models.md)
+
+## Development
 
 ```bash
-bentoml build src \
-  --arg model_tag=deep_recsys:multvae-onnx-v1 \
-  --version multvae-onnx-v1
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src
+uv run pytest --cov=recsys --cov-report=term-missing
 
-bentoml containerize deep_recsys_service:multvae-onnx-v1 \
-  -t deep-recsys-lab:multvae-onnx-v1
-
-docker run --rm -p 3000:3000 deep-recsys-lab:multvae-onnx-v1
+cd apps/site
+npm ci
+npm run build
+npm run check
 ```
 
-The public `deep_recsys_service` keeps authentication, request IDs, middleware,
-`/recommend`, and `/model_info`. Its `deep_recsys_inference` dependency owns the
-model and the single ONNX Runtime session. Both Services use one worker, metrics,
-a concurrency limit of eight, and BentoML's 60-second timeout. The internal
-`recommend_batch` API adaptively combines requests into batches of at most eight
-with a 10 ms latency budget. Each valid batch uses one contiguous NumPy matrix
-and one ONNX Runtime call; request-specific catalog errors remain isolated.
-Request-vector construction, seen-item masking, and deterministic top-k
-selection use NumPy, so the production image has no Torch dependency.
-
-## Controlled inference benchmark
-
-The model-forward benchmark compares the checkpoint and its registered ONNX
-artifact in the same process. It uses repeated rounds and exits nonzero if ONNX
-Runtime's median p50 is slower; use `--report-only` only for diagnostics.
-
-```bash
-python scripts/benchmark_inference.py \
-  --checkpoint outputs/multvae-20260818-224228/best.pt \
-  --data-dir data/processed \
-  --model-tag deep_recsys:multvae-onnx-v1 \
-  --output outputs/onnx-inference-benchmark.json
-```
-
-The verified local 20,108-item, batch-size-one run used 25 warm-ups and five
-rounds of 200 calls. PyTorch recorded p50 `1.466750 ms`, p95 `1.628900 ms`, and
-`666.021` inferences/second; ONNX Runtime recorded p50 `1.390500 ms`, p95
-`1.454731 ms`, and `714.016` inferences/second. That is a `1.054836x` p50
-speedup with maximum absolute score error `0.00001621`. These are same-host
-model-forward measurements, not a portable production capacity claim. HTTP
-latency and throughput remain non-gating end-to-end service measurements.
-
-The HTTP benchmark sends synchronized waves of eight over warm persistent
-connections. Fourteen warm-up requests cover BentoML 1.4's dispatcher
-calibration sequence, and 80 logical requests are measured by default. Its
-optional functional gate reads BentoML's adaptive-batch histogram and requires
-the batch-size sum to exceed its count; p50, p95, and throughput remain
-non-gating. The benchmark sends exactly the requested attempts and records HTTP
-status counts; the separate OCI smoke request remains the correctness gate.
-
-```bash
-python scripts/benchmark_service.py \
-  --base-url http://127.0.0.1:3000 \
-  --requests 80 --concurrency 8 --warmup 14 \
-  --require-adaptive-batching \
-  --output outputs/bento-serving-benchmark.json
-```
-
-The verified local 20,108-item OCI run recorded successful-response p50
-`29.704 ms`, p95 `49.034 ms`, and `207.411` attempted requests/second. BentoML
-recorded a batch-size sum of `72` over `35` ONNX calls (mean `2.057`), so the
-functional gate passed. Of 80 synchronized attempts, 58 returned 200 and 22
-were shed with 503 under the selected hard 10 ms budget; status counts and HTTP
-performance remain non-gating.
-
-## Model serving UI
-
-The standalone serving console calls BentoML through a narrow same-origin
-proxy. With the Service running on port 3000, start the UI and open
-`http://127.0.0.1:8080`:
-
-```bash
-python scripts/serve_model_ui.py \
-  --backend-url http://127.0.0.1:3000 \
-  --port 8080
-```
-
-## Reproduction and synthetic smoke
-
-The full reproduction command is:
-
-```bash
-deep-recsys train --config-name config \
-  dataset=movielens20m device=auto trainer.epochs=200 trainer.batch_size=500 \
-  trainer.total_anneal_steps=200000
-```
-
-Tests use an in-memory synthetic dataset, so no external data is needed for
-the core workflow. The bounded train → register → serve acceptance path is:
-
-```bash
-python -m deep_recsys_lab.smoke --output-dir /tmp/deep-recsys-smoke
-```
-
-This produces a versioned schema-v3 ONNX Bento model tag, not a resumable
-training checkpoint. CI gates numerical/ranking parity, same-process p50
-non-regression, and evidence of multi-request adaptive batches. Warm HTTP
-p50/p95 latency and throughput remain non-gating artifacts because shared-runner
-service measurements are noisy.
-
-The clean analysis notebook in `notebooks/analysis.ipynb` only reads saved
-metrics and model metadata. The original downloaded `mulvae-cf.ipynb` is
-preserved unchanged and ignored by Git. The local validation record is in
-[`docs/acceptance.md`](docs/acceptance.md).
-
-<a id="limitations"></a>
-
-## Limitations
-
-- Multi-VAE is collaborative-only: titles, genres, text, time, and context do
-  not influence ranking scores.
-- Inference is catalog-bound. Unknown movies cannot be scored, and empty or
-  very short histories remain cold-start cases.
-- This repository contains no MovieLens data, checkpoints, or code license.
-  Downloaded and processed artifacts are ignored by Git. MovieLens is restricted
-  to research use, requires acknowledgment, cannot be redistributed without
-  permission, and cannot be used commercially without permission; read the
-  [official MovieLens-20M README](https://files.grouplens.org/datasets/movielens/ml-20m-README.html)
-  before downloading it.
-- The ONNX speedup is a controlled, batch-size-one model-forward result from one
-  host. HTTP latency, throughput, and the serving-console round trip are
-  hardware-specific, non-gating measurements rather than production-capacity
-  claims.
-
-## References
-
-- Dawen Liang, Rahul G. Krishnan, Matthew D. Hoffman, and Tony Jebara,
-  [Variational Autoencoders for Collaborative Filtering](https://dawenl.github.io/publications/LiangKHJ18-vae_cf.pdf), WWW 2018.
-- Dawen Liang et al., [official `vae_cf` notebook implementation](https://github.com/dawenl/vae_cf).
-- F. Maxwell Harper and Joseph A. Konstan, [The MovieLens Datasets: History and Context](https://doi.org/10.1145/2827872).
-- The prior thesis repository is acknowledged in `docs/references.md`.
+See [NOTICE](NOTICE) for required attribution covering adapted hybrid-retrieval material.

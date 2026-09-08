@@ -1,0 +1,4 @@
+name: bpr
+parameters:
+  embedding_dim: 32
+  steps: 100
