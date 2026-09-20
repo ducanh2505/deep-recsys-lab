@@ -8,7 +8,8 @@ artifact identity rules.
 - **MultiVAE** learns a variational autoencoder over weighted user–item rows and exports a
   dense ONNX scorer. It supports known-user and interaction-history queries.
 - **LightGCN** propagates trainable embeddings over a normalized bipartite graph and exports
-  final user/item embeddings. It supports known users.
+  final user/item embeddings. It supports known users and history queries through a mean
+  item-embedding profile.
 - **BPR** trains pairwise user/item embeddings and supports known users plus mean history
   profiles.
 - **SASRec** learns causal self-attention over ordered interaction sequences and exports an
