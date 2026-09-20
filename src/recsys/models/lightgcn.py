@@ -113,10 +113,12 @@ class LightGCNPlugin(ModelPlugin):
         return RuntimeSpec(
             plugin=self.name,
             runtime="embedding",
-            capabilities=(QueryMode.KNOWN_USER,),
+            # EmbeddingRuntime can build a history profile by averaging the
+            # item embeddings, in addition to serving the learned user vector.
+            capabilities=(QueryMode.KNOWN_USER, QueryMode.HISTORY),
             arrays={
                 "user_embeddings": user_embeddings.cpu().numpy().astype(np.float32),
                 "item_embeddings": item_embeddings.cpu().numpy().astype(np.float32),
             },
-            metadata={"score": "inner_product"},
+            metadata={"score": "inner_product", "history_profile": "mean"},
         )

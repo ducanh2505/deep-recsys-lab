@@ -1,0 +1,60 @@
+# Exhaustive hybrid configuration: every built-in retriever is fitted and
+# fused into one history-capable artifact. This is intentionally separate from
+# hybrid.yaml because the MovieLens-20M run is substantially more expensive.
+
+model:
+  name: hybrid
+
+retrieval:
+  components:
+    - popularity
+    - itemknn
+    - tfidf
+    - semantic
+    - markov
+    - graph_cooccurrence
+    - graph_embeddings
+    - bpr
+    - sasrec
+    - multivae
+    - lightgcn
+    - two_tower
+  parameters:
+    itemknn:
+      neighbours: 100
+    semantic:
+      embedding_dim: 128
+      neighbours: 100
+    graph_cooccurrence:
+      min_count: 2
+    graph_embeddings:
+      embedding_dim: 32
+      neighbours: 100
+    bpr:
+      embedding_dim: 32
+      steps: 100
+    sasrec:
+      embedding_dim: 32
+      layers: 2
+      max_length: 50
+      dropout: 0.1
+    multivae:
+      hidden_dim: 64
+      latent_dim: 32
+      dropout: 0.2
+    lightgcn:
+      embedding_dim: 32
+      layers: 2
+      l2: 0.0001
+      steps: 1000
+    two_tower:
+      embedding_dim: 32
+      steps: 100
+
+fusion:
+  name: rrf
+  parameters:
+    rank_constant: 60
+
+reranker:
+  name: none

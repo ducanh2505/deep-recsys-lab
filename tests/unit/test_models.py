@@ -120,4 +120,6 @@ def test_model_plugins_emit_safe_runtime_specs(
     spec = fit_model(name, context(prepared, tmp_path / name, parameters))
     assert spec.runtime == runtime
     assert capability in spec.capabilities
+    if name == "lightgcn":
+        assert QueryMode.HISTORY in spec.capabilities
     assert all(isinstance(value, np.ndarray) for value in spec.arrays.values())
