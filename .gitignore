@@ -1,0 +1,23 @@
+.agents/
+.coverage
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.vscode/
+__pycache__/
+*.py[cod]
+dist/
+node_modules/
+var/
+
+# Downloaded data and generated ML outputs are local-only.
+data/
+artifacts/
+reports/
+mlruns/
+
+# Local configuration and secrets.
+.env
+.env.*
+!.env.example
