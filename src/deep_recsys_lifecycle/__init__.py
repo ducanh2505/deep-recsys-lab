@@ -1,4 +1,4 @@
-"""Popularity lifecycle tracer bullet for the Movie Recommender Showcase."""
+"""Temporal Movie Recommender lifecycle showcase primitives."""
 
 from .models import Candidate, PositiveInteraction, RatingEvent
 

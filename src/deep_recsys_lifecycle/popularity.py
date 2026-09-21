@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 from .event_store import DataSnapshot
 from .models import Candidate, PositiveInteraction
+from .positive import history_movie_ids
+from .retriever import MAX_CANDIDATE_POOL, validate_candidate_pool_limit
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,6 +15,10 @@ class PopularityModel:
     catalog: tuple[int, ...]
     counts: Mapping[int, int]
     subject_histories: Mapping[int, tuple[int, ...]]
+
+    @property
+    def name(self) -> str:
+        return "popularity"
 
     def ranked_movie_ids(self, excluded_movie_ids: Collection[int] = ()) -> tuple[int, ...]:
         excluded = set(excluded_movie_ids)
@@ -25,7 +31,15 @@ class PopularityModel:
     def recommend(self, excluded_movie_ids: Collection[int], top_n: int) -> tuple[Candidate, ...]:
         if not 1 <= top_n <= 100:
             raise ValueError("top_n must be between 1 and 100")
-        movie_ids = self.ranked_movie_ids(excluded_movie_ids)[:top_n]
+        return self.candidate_pool(excluded_movie_ids, limit=top_n)
+
+    def candidate_pool(
+        self,
+        excluded_movie_ids: Collection[int],
+        limit: int = MAX_CANDIDATE_POOL,
+    ) -> tuple[Candidate, ...]:
+        validate_candidate_pool_limit(limit)
+        movie_ids = self.ranked_movie_ids(excluded_movie_ids)[:limit]
         return tuple(
             Candidate(movie_id=movie_id, score=self.counts.get(movie_id, 0), rank=rank)
             for rank, movie_id in enumerate(movie_ids, start=1)
@@ -69,7 +83,10 @@ class PopularityModel:
 def fit_popularity(
     snapshot: DataSnapshot, interactions: Iterable[PositiveInteraction]
 ) -> PopularityModel:
-    interaction_values = tuple(interactions)
+    snapshot_event_ids = {event.event_id for event in snapshot.events}
+    interaction_values = tuple(
+        interaction for interaction in interactions if interaction.event_id in snapshot_event_ids
+    )
     catalog = tuple(sorted({event.movie_id for event in snapshot.events}))
     counts = Counter(interaction.movie_id for interaction in interaction_values)
     histories: defaultdict[int, list[PositiveInteraction]] = defaultdict(list)
@@ -77,13 +94,7 @@ def fit_popularity(
         histories[interaction.subject_id].append(interaction)
 
     subject_histories = {
-        subject_id: tuple(
-            interaction.movie_id
-            for interaction in sorted(
-                subject_interactions,
-                key=lambda item: (item.event_time, item.event_id),
-            )
-        )
+        subject_id: history_movie_ids(subject_interactions)
         for subject_id, subject_interactions in histories.items()
     }
     return PopularityModel(catalog=catalog, counts=counts, subject_histories=subject_histories)

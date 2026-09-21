@@ -107,8 +107,8 @@ class PositiveInteraction:
 @dataclass(frozen=True, slots=True)
 class Candidate:
     movie_id: int
-    score: int
+    score: int | float
     rank: int
 
-    def to_dict(self) -> dict[str, int]:
+    def to_dict(self) -> dict[str, int | float]:
         return {"movie_id": self.movie_id, "score": self.score, "rank": self.rank}

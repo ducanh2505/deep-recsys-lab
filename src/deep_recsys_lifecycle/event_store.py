@@ -23,6 +23,14 @@ class DataSnapshot:
     def event_count(self) -> int:
         return len(self.events)
 
+    @classmethod
+    def from_events(
+        cls, events: tuple[RatingEvent, ...] | list[RatingEvent], source_batch_count: int = 1
+    ) -> DataSnapshot:
+        """Create a snapshot from an already ordered event partition."""
+
+        return cls(events=tuple(events), source_batch_count=source_batch_count)
+
     @property
     def fingerprint(self) -> str:
         payload = json.dumps(
