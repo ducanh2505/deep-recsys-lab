@@ -6,7 +6,7 @@ retrieval contract exists.
 
 **Parent specification:** [GitHub issue #33](https://github.com/ducanh2505/deep-recsys-lab/issues/33)
 
-## 01. Popularity lifecycle tracer bullet
+## 01. Popularity lifecycle tracer bullet ([#34](https://github.com/ducanh2505/deep-recsys-lab/issues/34))
 
 **Blocked by:** None.
 
@@ -22,9 +22,9 @@ a minimal static report.
 - Known, history-only, and empty-history requests return unseen Candidates through defined
   routes.
 
-## 02. Time-respecting evaluation and ItemKNN
+## 02. Time-respecting evaluation and ItemKNN ([#35](https://github.com/ducanh2505/deep-recsys-lab/issues/35))
 
-**Blocked by:** 01.
+**Blocked by:** [#34](https://github.com/ducanh2505/deep-recsys-lab/issues/34).
 
 **What it delivers:** The 50% Data Snapshot and its 50-60% Future Window become an executable
 evaluation stage, with ItemKNN adding a personalized Candidate Pool and the report separating
@@ -36,9 +36,9 @@ Retrieval Coverage from final ranking quality.
 - Popularity and ItemKNN are compared on the same deterministic cohort.
 - RRF and Oracle Union diagnostics establish the initial fusion headroom.
 
-## 03. Immutable Serving Artifacts and activation
+## 03. Immutable Serving Artifacts and activation ([#36](https://github.com/ducanh2505/deep-recsys-lab/issues/36))
 
-**Blocked by:** 02.
+**Blocked by:** [#35](https://github.com/ducanh2505/deep-recsys-lab/issues/35).
 
 **What it delivers:** A Lifecycle Stage exports self-describing immutable artifacts, validates
 them with smoke queries, activates a successful artifact, and lets the CPU API load it without
@@ -51,9 +51,9 @@ training dependencies.
 - A partial or incompatible artifact cannot become active.
 - Restarting the API preserves recommendation behaviour for the same artifact.
 
-## 04. Mult-VAE vertical slice
+## 04. Mult-VAE vertical slice ([#37](https://github.com/ducanh2505/deep-recsys-lab/issues/37))
 
-**Blocked by:** 02.
+**Blocked by:** [#35](https://github.com/ducanh2505/deep-recsys-lab/issues/35).
 
 **What it delivers:** Mult-VAE trains with automatic MPS preference and CPU fallback, exports a
 serving-compatible payload, contributes Top-200 Candidates for Known-User and History-Only
@@ -65,9 +65,9 @@ Queries, and appears in quality and resource sections of the report.
 - The artifact records the actual device, duration, and fallback reason when applicable.
 - The fast profile runs without requiring an MPS device.
 
-## 05. LightGCN vertical slice
+## 05. LightGCN vertical slice ([#38](https://github.com/ducanh2505/deep-recsys-lab/issues/38))
 
-**Blocked by:** 02.
+**Blocked by:** [#35](https://github.com/ducanh2505/deep-recsys-lab/issues/35).
 
 **What it delivers:** LightGCN trains with measured MPS compatibility and CPU fallback, exports
 a CPU-serving payload, contributes Top-200 Candidates only for Known-User Queries, and appears
@@ -80,9 +80,11 @@ in quality and resource comparisons.
 - History-Only and Empty-History Queries never pretend to have a LightGCN identity.
 - Device compatibility or fallback is explicit rather than silently changing execution.
 
-## 06. Query-mode Learned Hybrid Fusion
+## 06. Query-mode Learned Hybrid Fusion ([#39](https://github.com/ducanh2505/deep-recsys-lab/issues/39))
 
-**Blocked by:** 03, 04, and 05.
+**Blocked by:** [#36](https://github.com/ducanh2505/deep-recsys-lab/issues/36),
+[#37](https://github.com/ducanh2505/deep-recsys-lab/issues/37), and
+[#38](https://github.com/ducanh2505/deep-recsys-lab/issues/38).
 
 **What it delivers:** Validation outcomes train separate Known-User and History-Only LHF
 classifiers over the appropriate retriever unions. LHF produces the final Top-200 and Top-10
@@ -97,9 +99,9 @@ orders, with RRF, best-single, and Oracle Union comparisons in the report.
 - Coverage, conditional success, end-to-end Recall, NDCG, and realized headroom agree on
   hand-checkable fixtures.
 
-## 07. Rolling 50-to-100 lifecycle
+## 07. Rolling 50-to-100 lifecycle ([#40](https://github.com/ducanh2505/deep-recsys-lab/issues/40))
 
-**Blocked by:** 06.
+**Blocked by:** [#39](https://github.com/ducanh2505/deep-recsys-lab/issues/39).
 
 **What it delivers:** One orchestration command evaluates, ingests, retrains, exports, and
 reports the 50%, 60%, 70%, 80%, 90%, and 100% Lifecycle Stages with rolling LHF validation and
@@ -112,9 +114,9 @@ no future leakage.
   claim.
 - Interrupted completed stages can be reused without mutating their artifacts.
 
-## 08. Portfolio report and latency evidence
+## 08. Portfolio report and latency evidence ([#41](https://github.com/ducanh2505/deep-recsys-lab/issues/41))
 
-**Blocked by:** 07.
+**Blocked by:** [#40](https://github.com/ducanh2505/deep-recsys-lab/issues/40).
 
 **What it delivers:** The final self-contained HTML report presents architecture, ingestion,
 snapshot progression, retrieval bottlenecks, query-mode and cold-user quality, resource use,
