@@ -34,8 +34,8 @@ def create_app(artifact: ServingArtifact | Path) -> FastAPI:
     app = FastAPI(title="Movie Recommender Lifecycle Showcase")
 
     @app.get("/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok", "retriever": "popularity"}
+    def health() -> dict[str, object]:
+        return loaded_artifact.health_metadata()
 
     @app.post("/recommendations")
     def recommendations(request: RecommendationRequest) -> dict[str, object]:

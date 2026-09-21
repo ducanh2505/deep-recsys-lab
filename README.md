@@ -2,7 +2,7 @@
 
 A local-first portfolio project that demonstrates a time-respecting evaluation stage for an
 implicit-feedback movie recommender: Kafka ingestion, a 50% Data Snapshot, a withheld 50–60%
-Future Window, Popularity and sparse ItemKNN Candidate Pools, a loadable Serving Artifact,
+Future Window, Popularity and sparse ItemKNN Candidate Pools, immutable Serving Artifacts,
 FastAPI recommendations, and a static HTML report.
 
 This orphan branch is intentionally independent from the repository's `main` history. Ticket
@@ -16,7 +16,8 @@ benchmarking remain out of scope here.
 - [Product and engineering specification](docs/spec.md)
 - [Implementation roadmap](docs/roadmap.md)
 - [Architecture decisions](docs/adr/)
-- [Tracking issue #35](https://github.com/ducanh2505/deep-recsys-lab/issues/35)
+- [Serving Artifact contract](docs/artifacts.md)
+- [Tracking issue #36](https://github.com/ducanh2505/deep-recsys-lab/issues/36)
 
 ## Scope at a glance
 
@@ -44,11 +45,12 @@ uv sync --dev
 uv run movie-recsys fast --output artifacts/fast
 ```
 
-The command creates `artifacts/fast/serving_artifact/` and `artifacts/fast/report.html`, plus
-`data_snapshot.json` and `future_window.json`. It intentionally publishes the fixture twice to
-exercise at-least-once replay; the full materialized snapshot remains unchanged by the duplicate
-batch. Fitting uses only the first 50% of chronologically ordered events. The next 10% supplies
-Gold Candidates and metrics, never model state or features.
+The command creates an artifact store at `artifacts/fast/`, containing an immutable
+`artifact-<id>/` directory, `active.json`, `report.html`, `data_snapshot.json`, and
+`future_window.json`. It intentionally publishes the fixture twice to exercise at-least-once
+replay; the full materialized snapshot remains unchanged by the duplicate batch. Fitting uses
+only the first 50% of chronologically ordered events. The next 10% supplies Gold Candidates and
+metrics, never model state or features.
 
 The report compares Top-200 Popularity and ItemKNN pools on the same deterministic cohort with
 `Coverage@200`, `ConditionalRecall@10`, `EndToEndRecall@10`, `NDCG@10`, RRF, and diagnostic
@@ -57,10 +59,15 @@ Oracle Union coverage.
 To serve the loadable artifact:
 
 ```bash
-uv run movie-recsys serve --artifact artifacts/fast/serving_artifact
+uv run movie-recsys serve --artifact artifacts/fast
 curl -s -X POST http://127.0.0.1:8000/recommendations \
   -H 'content-type: application/json' -d '{"subject_id": 1, "top_n": 5}'
 ```
+
+`serve` accepts either an artifact store (which follows `active.json`) or one explicit immutable
+artifact directory. The API loads persisted runtime payloads only; it does not fit a model,
+replay Kafka, or read the Event Store. Restarting the API with the same store therefore keeps
+the artifact identity and recommendation responses stable.
 
 Run the deterministic tests without Docker:
 

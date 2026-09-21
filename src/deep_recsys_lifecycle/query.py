@@ -49,13 +49,19 @@ class RecommendationResult:
     candidates: tuple[Candidate, ...]
     retriever: str
     artifact_fingerprint: str
+    artifact_id: str
+    bundle_fingerprint: str
 
     def to_dict(self) -> dict[str, object]:
         return {
             "query_mode": self.query_mode,
             "retriever": self.retriever,
             "candidates": [candidate.to_dict() for candidate in self.candidates],
-            "provenance": {"data_snapshot_fingerprint": self.artifact_fingerprint},
+            "provenance": {
+                "artifact_id": self.artifact_id,
+                "artifact_fingerprint": self.bundle_fingerprint,
+                "data_snapshot_fingerprint": self.artifact_fingerprint,
+            },
         }
 
 
@@ -81,4 +87,6 @@ class RecommendationService:
             candidates=self.artifact.model.recommend(excluded, top_n),
             retriever="popularity",
             artifact_fingerprint=str(self.artifact.manifest["data_snapshot_fingerprint"]),
+            artifact_id=self.artifact.artifact_id,
+            bundle_fingerprint=self.artifact.artifact_fingerprint,
         )

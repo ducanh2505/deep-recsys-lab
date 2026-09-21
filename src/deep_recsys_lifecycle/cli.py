@@ -56,12 +56,15 @@ def fast(
         kafka=ConfluentKafkaBoundary(bootstrap_servers),
     )
     typer.echo(f"Serving Artifact: {result.artifact_path}")
+    typer.echo(f"Active pointer: {result.active_pointer_path}")
     typer.echo(f"Static report: {result.report_path}")
 
 
 @app.command("serve")
 def serve(
-    artifact: Annotated[Path, typer.Option(help="Serving Artifact directory.")],
+    artifact: Annotated[
+        Path, typer.Option(help="Artifact store or immutable Serving Artifact directory.")
+    ],
     host: Annotated[str, typer.Option(help="Bind host.")] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="Bind port.")] = 8000,
 ) -> None:
