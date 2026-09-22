@@ -10,6 +10,7 @@ import typer
 
 from .kafka import ConfluentKafkaBoundary
 from .lifecycle import run_fast_lifecycle
+from .rolling import run_rolling_lifecycle
 
 app = typer.Typer(add_completion=False, help="Movie recommender lifecycle commands.")
 
@@ -56,6 +57,27 @@ def fast(
         kafka=ConfluentKafkaBoundary(bootstrap_servers),
     )
     typer.echo(f"Serving Artifact: {result.artifact_path}")
+    typer.echo(f"Active pointer: {result.active_pointer_path}")
+    typer.echo(f"Static report: {result.report_path}")
+
+
+@app.command("rolling")
+def rolling(
+    output: Annotated[Path, typer.Option(help="Rolling output/checkpoint directory.")] = Path(
+        "artifacts/rolling"
+    ),
+    bootstrap_servers: Annotated[
+        str, typer.Option(help="Kafka bootstrap address.")
+    ] = "localhost:9092",
+) -> None:
+    """Run the prequential 50%, 60%, 70%, 80%, 90%, and 100% lifecycle."""
+
+    _ensure_kafka(bootstrap_servers)
+    result = run_rolling_lifecycle(
+        output_dir=output,
+        kafka=ConfluentKafkaBoundary(bootstrap_servers),
+    )
+    typer.echo(f"Active 100% Serving Artifact: {result.artifact_path}")
     typer.echo(f"Active pointer: {result.active_pointer_path}")
     typer.echo(f"Static report: {result.report_path}")
 

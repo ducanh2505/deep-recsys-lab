@@ -454,3 +454,13 @@ def _evaluation_summary(report: EvaluationReport) -> dict[str, Any]:
     if report.lhf is not None:
         summary["lhf"] = report.lhf.metrics.to_dict()
     return summary
+
+
+# Keep the established lifecycle module as the public import seam while the rolling
+# orchestration lives in its own module.
+from .rolling import (  # noqa: E402,F401
+    RollingLifecycleError,
+    RollingLifecycleResult,
+    RollingStageResult,
+    run_rolling_lifecycle,
+)

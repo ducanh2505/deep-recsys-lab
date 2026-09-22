@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import html
 import json
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from .artifact import ServingArtifact
 from .evaluation import EvaluationReport, RetrieverEvaluation
@@ -281,3 +283,136 @@ def _lightgcn_resource_section(artifact: ServingArtifact) -> str:
         f"actual device: <code>{actual_device}</code>; "
         f"fallback reason: <code>{fallback}</code>.</p></section>\n"
     )
+
+
+def write_rolling_report(
+    path: Path,
+    *,
+    stages: Sequence[Mapping[str, Any]],
+    source_event_count: int,
+    dataset_checksum: str,
+    active_artifact_id: str,
+    source_revision: str,
+) -> None:
+    """Write the compact static report for the rolling 50-to-100 showcase."""
+
+    rows: list[str] = []
+    evidence_rows: list[str] = []
+    for stage in stages:
+        percentage = int(stage.get("percentage", 0))
+        evaluation_window = stage.get("evaluation_window")
+        window_text = (
+            f"{evaluation_window[0]}–{evaluation_window[1]}%"
+            if isinstance(evaluation_window, list) and len(evaluation_window) == 2
+            else "none"
+        )
+        evaluation = stage.get("evaluation")
+        known = _rolling_mode_summary(evaluation, "known_user")
+        history = _rolling_mode_summary(evaluation, "history_only")
+        rows.append(
+            "<tr>"
+            f"<td>{percentage}%</td>"
+            f"<td>{int(stage.get('snapshot_event_count', 0))}</td>"
+            f"<td><code>{html.escape(str(stage.get('artifact_id', '')))}</code></td>"
+            f"<td>{html.escape(window_text)}</td>"
+            f"<td>{'yes' if stage.get('active') else 'no'}</td>"
+            f"<td>{_rolling_metric(known, 'lhf', 'EndToEndRecall@10')}</td>"
+            f"<td>{_rolling_metric(known, 'popularity', 'EndToEndRecall@10')}</td>"
+            f"<td>{_rolling_metric(history, 'lhf', 'EndToEndRecall@10')}</td>"
+            f"<td>{_rolling_metric(history, 'popularity', 'EndToEndRecall@10')}</td>"
+            "</tr>"
+        )
+        manifest = stage.get("artifact_manifest", {})
+        if isinstance(manifest, Mapping):
+            multivae = manifest.get("multivae_training", {})
+            lightgcn = manifest.get("lightgcn_training", {})
+        else:
+            multivae = {}
+            lightgcn = {}
+        timings = stage.get("timings", {})
+        evidence_rows.append(
+            "<tr>"
+            f"<td>{percentage}%</td>"
+            f"<td>{html.escape(str(_evidence_value(multivae, 'actual_device')))}</td>"
+            f"<td>{html.escape(str(_evidence_value(lightgcn, 'actual_device')))}</td>"
+            f"<td>{html.escape(str(_evidence_value(timings, 'training')))}</td>"
+            f"<td>{html.escape(str(_evidence_value(timings, 'export')))}</td>"
+            f"<td>{html.escape(str(_evidence_value(timings, 'smoke')))}</td>"
+            f"<td>{html.escape(str(_evidence_value(timings, 'evaluation')))}</td>"
+            "</tr>"
+        )
+
+    embedded = {
+        "source_event_count": source_event_count,
+        "dataset_checksum": dataset_checksum,
+        "active_artifact_id": active_artifact_id,
+        "source_revision": source_revision,
+        "stages": [dict(stage) for stage in stages],
+    }
+    data_json = html.escape(json.dumps(embedded, indent=2, sort_keys=True))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "<!doctype html>\n"
+        '<html lang="en">\n'
+        '<head><meta charset="utf-8"><title>Rolling Movie Recommender Lifecycle</title>'
+        "<style>body{font-family:system-ui;max-width:90rem;margin:2rem auto;line-height:1.5}"
+        "code,pre{background:#f4f4f4;padding:.25rem}section{margin:2rem 0}"
+        "table{border-collapse:collapse;width:100%;font-size:.9rem}th,td{border:1px solid #ddd;"
+        "padding:.45rem;text-align:left}th{background:#f4f4f4}</style></head>\n"
+        "<body>\n"
+        "<h1>Rolling 50-to-100 Movie Recommender Lifecycle</h1>\n"
+        '<section id="rolling-overview"><h2>Lifecycle overview</h2>'
+        f"<p>{source_event_count} source Rating Events advance through six cumulative Data "
+        "Snapshots. The Event Store ingests each Future Window only after its prior stage has "
+        "been evaluated.</p>"
+        f"<p>Active 100% artifact: <code>{html.escape(active_artifact_id)}</code></p></section>\n"
+        '<section id="rolling-stages"><h2>Stages 50% → 100%</h2>'
+        "<table><thead><tr><th>Stage</th><th>Snapshot Events</th><th>Artifact</th>"
+        "<th>Evaluation Window</th><th>Active</th><th>Known-User LHF Recall@10</th>"
+        "<th>Known-User Popularity Recall@10</th><th>History-Only LHF Recall@10</th>"
+        f"<th>History-Only Popularity Recall@10</th></tr></thead><tbody>"
+        f"{''.join(rows)}</tbody></table>"
+        "</section>\n"
+        '<section id="evaluation-boundaries"><h2>Evaluation boundaries</h2>'
+        "<p>Stages 50–90 report Known-User and History-Only quality against the next Future "
+        "Window before ingestion. Baselines include Popularity, ItemKNN, Mult-VAE, LightGCN, "
+        "RRF, and the diagnostic Oracle Union in the embedded stage records.</p>"
+        "<p><strong>Stage 100 has no Future Window and carries no future-quality claim.</strong> "
+        "The final headline quality is the 90% → 100% evaluation.</p></section>\n"
+        '<section id="training-device-evidence"><h2>Training and device evidence</h2>'
+        "<table><thead><tr><th>Stage</th><th>Mult-VAE device</th><th>LightGCN device</th>"
+        "<th>Training seconds</th><th>Export seconds</th><th>Smoke seconds</th>"
+        f"<th>Evaluation seconds</th></tr></thead><tbody>{''.join(evidence_rows)}</tbody></table>"
+        "</section>\n"
+        '<section id="provenance"><h2>Provenance</h2>'
+        f"<p>Dataset checksum: <code>{html.escape(dataset_checksum)}</code>; source revision: "
+        f"<code>{html.escape(source_revision)}</code>.</p>"
+        f"<pre>{data_json}</pre></section>\n"
+        "</body>\n</html>\n",
+        encoding="utf-8",
+    )
+
+
+def _rolling_mode_summary(value: object, mode: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    summary = value.get(mode)
+    return summary if isinstance(summary, Mapping) else {}
+
+
+def _rolling_metric(summary: Mapping[str, Any], name: str, metric: str) -> str:
+    if name == "popularity":
+        retrievers = summary.get("retrievers", {})
+        value = retrievers.get("popularity") if isinstance(retrievers, Mapping) else None
+    elif name == "lhf":
+        value = summary.get("lhf")
+    else:
+        value = None
+    if not isinstance(value, Mapping):
+        return "n/a"
+    raw = value.get(metric)
+    return f"{float(raw):.4f}" if isinstance(raw, (int, float)) else "n/a"
+
+
+def _evidence_value(value: object, key: str) -> object:
+    return value.get(key, "n/a") if isinstance(value, Mapping) else "n/a"

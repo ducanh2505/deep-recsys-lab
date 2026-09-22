@@ -79,5 +79,49 @@ History-Only API responses use their LHF order; Empty-History remains Popularity
 ItemKNN are smoke-tested for Known-User and History-Only serving, while LightGCN is smoke-tested
 only for Known-User serving. History-Only and Empty-History never receive LightGCN Candidates.
 This issue does not add a distributed registry, multi-host locking, object storage,
-retention/garbage collection, rolling stages, latency benchmarking, an LLM reranker, or a
-downstream ranker.
+retention/garbage collection, latency benchmarking, an LLM reranker, or a downstream ranker.
+
+## Rolling lifecycle artifacts
+
+Issue #40 adds a resumable local orchestration command:
+
+```bash
+uv run movie-recsys rolling --output artifacts/rolling
+```
+
+The command uses one source-event ordering `(event_time, event_id)` and advances these exact
+cumulative boundaries:
+
+```text
+50% snapshot → evaluate 50–60% → ingest 60%
+60% snapshot → evaluate 60–70% → ingest 70%
+70% snapshot → evaluate 70–80% → ingest 80%
+80% snapshot → evaluate 80–90% → ingest 90%
+90% snapshot → evaluate 90–100% → ingest 100%
+100% snapshot → train/export/smoke/activate (no future window)
+```
+
+`artifacts/rolling/` contains a small `rolling_checkpoint.json` ledger plus append-only
+`event_store/`, `snapshots/stage-*.json`, `evaluations/stage-*.json`, `stages/stage-*.json`,
+immutable artifact directories, `active.json`, and `report.html`. A stage is reusable only when
+its stage record, snapshot, evaluation record (for 50–90), artifact manifest/payload checksums,
+source dataset checksum, configuration checksum, seed, and source revision all match. A directory
+left behind without a complete record is not treated as complete. Invalid partial/corrupt state
+is moved to `.rolling-quarantine/` and rebuilt without changing completed stage artifacts.
+
+The stage 50% LHF is trained from inner validation wholly inside the 50% snapshot. Later LHF
+stages can use persisted validation rows/outcomes from earlier completed stages; their feature
+vectors and candidate pools are retained from the snapshot/model that produced those outcomes.
+The current Future Window is never used to train or select the current stage model. Stages 50–90
+are published but are not active serving artifacts. Only the 100% artifact can replace the active
+pointer, and activation happens after its smoke tests; a failure leaves the previous pointer
+unchanged. Stage 100 deliberately contains no future-quality metrics or 100→110% claim.
+
+Rolling manifests additionally carry `rolling_stage`, `rolling_configuration_sha256`, and an
+`evaluation_boundary` describing the cumulative cutoff and withheld window. The stage record
+and evaluation record carry the per-mode baseline/LHF metrics and measured evaluation/ingestion
+timings because the published bundle is immutable before its Future Window is evaluated.
+
+This is a local checkpoint/resume mechanism only. It does not add a database, distributed
+scheduler, multi-host lock, model registry, MovieLens 20M download, latency benchmark, or the
+portfolio report redesign from Issue #41.

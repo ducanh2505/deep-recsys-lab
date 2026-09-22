@@ -9,8 +9,9 @@ report.
 This orphan branch is intentionally independent from the repository's `main` history. Ticket
 #34 implements the ingestion and Popularity tracer bullet; #35 adds the leakage-free
 evaluation stage; #36 adds immutable activation; #37 adds the Mult-VAE vertical slice; #38
-adds the LightGCN vertical slice; and #39 adds query-mode Learned Hybrid Fusion. Rolling
-snapshots and latency benchmarking remain out of scope here.
+adds the LightGCN vertical slice; #39 adds query-mode Learned Hybrid Fusion; and #40 adds the
+rolling 50-to-100 showcase. Portfolio latency benchmarking and the final report redesign remain
+out of scope here (#41).
 
 ## Documents
 
@@ -23,6 +24,7 @@ snapshots and latency benchmarking remain out of scope here.
 - [Tracking issue #37](https://github.com/ducanh2505/deep-recsys-lab/issues/37)
 - [Tracking issue #38](https://github.com/ducanh2505/deep-recsys-lab/issues/38)
 - [Tracking issue #39](https://github.com/ducanh2505/deep-recsys-lab/issues/39)
+- [Tracking issue #40](https://github.com/ducanh2505/deep-recsys-lab/issues/40)
 
 ## Scope at a glance
 
@@ -48,6 +50,9 @@ snapshots and latency benchmarking remain out of scope here.
 - A self-contained HTML report separates the 50% Data Snapshot, 50–60% Future Window, retrieval
   coverage, final ranking quality, Popularity, ItemKNN, Mult-VAE, LightGCN, RRF, LHF, Oracle
   Union, realized headroom, and neural resource diagnostics by query mode.
+- The rolling command advances cumulative 50%, 60%, 70%, 80%, 90%, and 100% Data Snapshots;
+  each 50–90% Future Window is evaluated before its Kafka ingest, and only the smoke-tested
+  100% artifact is activated.
 
 Downloaded MovieLens data and generated artifacts are never committed.
 
@@ -104,3 +109,30 @@ boundary. Mult-VAE and LightGCN training do not require Docker or an MPS device;
 incompatible, or slower MPS paths are recorded and retried on CPU. The fast lifecycle selects
 CPU explicitly on hosts where the native MPS benchmark is unstable; the individual vertical
 slice functions retain their MPS probe/fallback seams.
+
+## Run the rolling 50-to-100 showcase
+
+The rolling command uses the same deterministic fixture and local Kafka boundary as `fast`, but
+ingests only the first 50% at the beginning of the run:
+
+```bash
+uv run movie-recsys rolling --output artifacts/rolling
+```
+
+For each stage, the command materializes the cumulative prefix, fits all retrievers and the
+query-mode LHF, exports and smoke-tests an immutable artifact, evaluates Known-User and
+History-Only queries on the next ten-percent Future Window, and only then ingests that window.
+The 100% stage trains and activates its artifact after smoke tests; it has no 100→110% quality
+claim. The final headline quality is the 90→100% evaluation.
+
+The output directory contains `rolling_checkpoint.json`, append-only `event_store/` batches,
+per-stage `snapshots/`, `evaluations/`, `stages/`, immutable artifact directories, `active.json`,
+and `report.html`. A rerun with the same source, seed, configuration, and code revision validates
+and reuses completed stages without changing their artifact bytes. A partial or corrupt stage is
+quarantined and rebuilt; a source/configuration/code-revision mismatch fails instead of mixing
+runs. Kafka replay remains at-least-once and deterministic Event IDs keep duplicate evidence out
+of snapshots and training.
+
+The rolling showcase deliberately remains local and small: it does not download MovieLens 20M,
+add a database, distributed scheduler, multi-host lock, registry, latency benchmark, or the
+portfolio report redesign planned for #41.

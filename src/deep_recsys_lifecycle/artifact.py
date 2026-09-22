@@ -469,6 +469,7 @@ class ServingArtifact:
         lightgcn_model: LightGCNRetriever | None = None,
         known_user_fusion: LearnedHybridFusion | None = None,
         history_only_fusion: LearnedHybridFusion | None = None,
+        manifest_metadata: Mapping[str, Any] | None = None,
     ) -> ServingArtifact:
         # Keep fitting behind the export seam; the runtime loader imports only serving.py.
         from .itemknn import fit_itemknn
@@ -565,6 +566,10 @@ class ServingArtifact:
             "payload_inventory": [],
             "source_revision": source_revision_value,
         }
+        for key, value in (manifest_metadata or {}).items():
+            if key in manifest:
+                raise ValueError(f"manifest metadata cannot replace required field: {key}")
+            manifest[key] = value
         return cls(
             path=path,
             manifest=manifest,

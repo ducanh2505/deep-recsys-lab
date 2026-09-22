@@ -406,6 +406,7 @@ def train_lhf_classifier(
     source_snapshot_fingerprint: str,
     seed: int = 42,
     validation_event_ids: Sequence[str] = (),
+    validation_sources: Sequence[Mapping[str, object]] = (),
     min_positive_rows: int = 2,
     min_negative_rows: int = 2,
 ) -> LearnedHybridFusion:
@@ -426,6 +427,7 @@ def train_lhf_classifier(
         "training_boundary": "inner_validation_before_future_window",
         "future_window_used_for_training": False,
         "validation_event_ids": list(validation_event_ids),
+        "validation_sources": [dict(source) for source in validation_sources],
         "row_count": len(rows),
         "positive_row_count": positive_count,
         "negative_row_count": negative_count,
