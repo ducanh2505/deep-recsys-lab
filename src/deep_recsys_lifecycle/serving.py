@@ -361,3 +361,241 @@ def _expect_matrix_shape(
 ) -> None:
     if len(value) != rows or any(len(row) != columns for row in value):
         raise ValueError(f"Mult-VAE payload {label} has the wrong shape")
+
+
+@dataclass(frozen=True, slots=True)
+class LightGCNRetriever:
+    """CPU-serving state for a snapshot-fitted LightGCN Candidate Retriever.
+
+    LightGCN deliberately has no history-only scoring path.  A Known-User Subject identity
+    selects one persisted Subject embedding; supplied history is used only for observed-Movie
+    exclusion and never to infer or substitute an embedding.
+    """
+
+    subject_ids: tuple[int, ...]
+    movie_ids: tuple[int, ...]
+    subject_histories: Mapping[int, tuple[int, ...]]
+    positive_edges: tuple[tuple[int, int], ...]
+    subject_embeddings: tuple[tuple[float, ...], ...]
+    movie_embeddings: tuple[tuple[float, ...], ...]
+    configuration: Mapping[str, Any]
+    training_metadata: Mapping[str, Any]
+
+    @property
+    def name(self) -> str:
+        return "lightgcn"
+
+    @property
+    def catalog(self) -> tuple[int, ...]:
+        return self.movie_ids
+
+    @property
+    def index_by_subject_id(self) -> dict[int, int]:
+        return {subject_id: index for index, subject_id in enumerate(self.subject_ids)}
+
+    @property
+    def index_by_movie_id(self) -> dict[int, int]:
+        return {movie_id: index for index, movie_id in enumerate(self.movie_ids)}
+
+    def candidate_pool(
+        self,
+        _history: Collection[int],
+        limit: int = MAX_CANDIDATE_POOL,
+    ) -> tuple[Candidate, ...]:
+        validate_candidate_pool_limit(limit)
+        raise ValueError("LightGCN requires a Known-User Subject identity")
+
+    def candidate_pool_for_subject(
+        self,
+        subject_id: int,
+        history: Collection[int],
+        limit: int = MAX_CANDIDATE_POOL,
+    ) -> tuple[Candidate, ...]:
+        validate_candidate_pool_limit(limit)
+        subject_index = self.index_by_subject_id.get(subject_id)
+        if subject_index is None:
+            raise KeyError(f"LightGCN has no embedding for Subject {subject_id}")
+        subject_embedding = self.subject_embeddings[subject_index]
+        excluded = set(history)
+        scored: list[tuple[int, float]] = []
+        for movie_id, movie_embedding in zip(self.movie_ids, self.movie_embeddings, strict=True):
+            if movie_id in excluded:
+                continue
+            score = sum(
+                subject_value * movie_value
+                for subject_value, movie_value in zip(
+                    subject_embedding, movie_embedding, strict=True
+                )
+            )
+            if not math.isfinite(score):
+                raise ValueError("LightGCN produced a non-finite score")
+            scored.append((movie_id, score))
+        ordered = sorted(scored, key=lambda item: (-item[1], item[0]))[:limit]
+        return tuple(
+            Candidate(movie_id=movie_id, score=score, rank=rank)
+            for rank, (movie_id, score) in enumerate(ordered, start=1)
+        )
+
+    def recommend_for_subject(
+        self, subject_id: int, history: Collection[int], top_n: int
+    ) -> tuple[Candidate, ...]:
+        if not 1 <= top_n <= 100:
+            raise ValueError("top_n must be between 1 and 100")
+        return self.candidate_pool_for_subject(subject_id, history, limit=top_n)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "payload_schema_version": 1,
+            "retriever": "lightgcn",
+            "subject_ids": list(self.subject_ids),
+            "movie_ids": list(self.movie_ids),
+            "subject_index": {
+                str(subject_id): index for index, subject_id in enumerate(self.subject_ids)
+            },
+            "movie_index": {str(movie_id): index for index, movie_id in enumerate(self.movie_ids)},
+            "subject_histories": {
+                str(subject_id): list(movie_ids)
+                for subject_id, movie_ids in self.subject_histories.items()
+            },
+            "subject_embeddings": [list(row) for row in self.subject_embeddings],
+            "movie_embeddings": [list(row) for row in self.movie_embeddings],
+            "configuration": dict(self.configuration),
+            "training_metadata": dict(self.training_metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> LightGCNRetriever:
+        if value.get("payload_schema_version") != 1 or value.get("retriever") != "lightgcn":
+            raise ValueError("LightGCN payload has an unsupported schema or retriever")
+        raw_subject_ids = value.get("subject_ids")
+        raw_movie_ids = value.get("movie_ids")
+        raw_subject_index = value.get("subject_index")
+        raw_movie_index = value.get("movie_index")
+        raw_histories = value.get("subject_histories")
+        raw_subject_embeddings = value.get("subject_embeddings")
+        raw_movie_embeddings = value.get("movie_embeddings")
+        raw_configuration = value.get("configuration")
+        raw_training = value.get("training_metadata")
+        if (
+            not isinstance(raw_subject_ids, list)
+            or not isinstance(raw_movie_ids, list)
+            or not isinstance(raw_subject_index, Mapping)
+            or not isinstance(raw_movie_index, Mapping)
+            or not isinstance(raw_histories, Mapping)
+            or not isinstance(raw_configuration, Mapping)
+            or not isinstance(raw_training, Mapping)
+        ):
+            raise ValueError("LightGCN payload is missing graph mappings or embeddings")
+
+        subject_ids = tuple(_strict_int(item, "LightGCN Subject id") for item in raw_subject_ids)
+        movie_ids = tuple(_strict_int(item, "LightGCN Movie id") for item in raw_movie_ids)
+        if not subject_ids or not movie_ids:
+            raise ValueError("LightGCN payload mappings must be non-empty")
+        if len(set(subject_ids)) != len(subject_ids) or len(set(movie_ids)) != len(movie_ids):
+            raise ValueError("LightGCN payload mappings contain duplicate IDs")
+        expected_subject_index = {
+            str(subject_id): index for index, subject_id in enumerate(subject_ids)
+        }
+        expected_movie_index = {str(movie_id): index for index, movie_id in enumerate(movie_ids)}
+        if dict(raw_subject_index) != expected_subject_index:
+            raise ValueError("LightGCN Subject mapping is inconsistent")
+        if dict(raw_movie_index) != expected_movie_index:
+            raise ValueError("LightGCN Movie mapping is inconsistent")
+
+        catalog_ids = set(movie_ids)
+        subject_id_set = set(subject_ids)
+        subject_histories: dict[int, tuple[int, ...]] = {}
+        for subject_id, raw_history in raw_histories.items():
+            if not isinstance(subject_id, str) or not isinstance(raw_history, list):
+                raise ValueError("LightGCN payload has an invalid Subject history")
+            parsed_subject_id = _parse_int(subject_id, "LightGCN history Subject id")
+            if parsed_subject_id not in subject_id_set:
+                raise ValueError("LightGCN history contains an unknown Subject")
+            history = tuple(_strict_int(item, "LightGCN history Movie id") for item in raw_history)
+            if len(set(history)) != len(history) or not set(history) <= catalog_ids:
+                raise ValueError("LightGCN Subject history is not a deduplicated catalog profile")
+            subject_histories[parsed_subject_id] = history
+        if set(subject_histories) != subject_id_set:
+            raise ValueError("LightGCN payload is missing a Subject history")
+
+        subject_embeddings = _embedding_matrix(raw_subject_embeddings, "subject_embeddings")
+        movie_embeddings = _embedding_matrix(raw_movie_embeddings, "movie_embeddings")
+        dimension = len(subject_embeddings[0]) if subject_embeddings else 0
+        if dimension < 1:
+            raise ValueError("LightGCN embedding dimension must be positive")
+        _expect_embedding_shape(
+            subject_embeddings, len(subject_ids), dimension, "subject_embeddings"
+        )
+        _expect_embedding_shape(movie_embeddings, len(movie_ids), dimension, "movie_embeddings")
+        _validate_lightgcn_configuration(raw_configuration, dimension, raw_training)
+
+        return cls(
+            subject_ids=subject_ids,
+            movie_ids=movie_ids,
+            subject_histories=subject_histories,
+            positive_edges=(),
+            subject_embeddings=subject_embeddings,
+            movie_embeddings=movie_embeddings,
+            configuration=dict(raw_configuration),
+            training_metadata=dict(raw_training),
+        )
+
+
+def _embedding_matrix(value: object, label: str) -> tuple[tuple[float, ...], ...]:
+    if not isinstance(value, list) or any(not isinstance(row, list) for row in value):
+        raise ValueError(f"LightGCN payload {label} must be a matrix")
+    return tuple(tuple(_finite_float(item, f"LightGCN {label}") for item in row) for row in value)
+
+
+def _expect_embedding_shape(
+    value: tuple[tuple[float, ...], ...], rows: int, columns: int, label: str
+) -> None:
+    if len(value) != rows or any(len(row) != columns for row in value):
+        raise ValueError(f"LightGCN payload {label} has the wrong shape")
+
+
+def _validate_lightgcn_configuration(
+    configuration: Mapping[str, object],
+    embedding_dimension: int,
+    training_metadata: Mapping[str, object],
+) -> None:
+    required = {
+        "seed",
+        "embedding_dim",
+        "layers",
+        "epochs",
+        "batch_size",
+        "negative_samples",
+        "negative_sampling",
+        "learning_rate",
+        "regularization",
+        "mps_slowdown_threshold",
+    }
+    missing = sorted(required - configuration.keys())
+    if missing:
+        raise ValueError(f"LightGCN configuration is missing: {missing}")
+    configured_dimension = configuration["embedding_dim"]
+    if (
+        not isinstance(configured_dimension, int)
+        or isinstance(configured_dimension, bool)
+        or configured_dimension != embedding_dimension
+    ):
+        raise ValueError("LightGCN configuration and embedding shapes are inconsistent")
+    for key in ("layers", "epochs", "batch_size", "negative_samples"):
+        value = configuration[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"LightGCN configuration {key} must be a positive integer")
+    seed = configuration["seed"]
+    if not isinstance(seed, int) or isinstance(seed, bool):
+        raise ValueError("LightGCN configuration seed must be an integer")
+    if training_metadata.get("seed") != seed:
+        raise ValueError("LightGCN configuration and training seed are inconsistent")
+    if configuration["negative_sampling"] != "uniform":
+        raise ValueError("LightGCN payload uses unsupported negative sampling")
+    learning_rate = _finite_float(configuration["learning_rate"], "LightGCN learning_rate")
+    regularization = _finite_float(configuration["regularization"], "LightGCN regularization")
+    slowdown_threshold = _finite_float(
+        configuration["mps_slowdown_threshold"], "LightGCN mps_slowdown_threshold"
+    )
+    if learning_rate <= 0 or regularization < 0 or slowdown_threshold < 1:
+        raise ValueError("LightGCN configuration contains invalid training values")

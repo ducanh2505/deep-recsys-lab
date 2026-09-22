@@ -105,21 +105,43 @@ class RecommendationService:
 
         if retriever == "popularity":
             return self.recommend(query, top_n=top_n)
+        if retriever == "lightgcn":
+            if not isinstance(query, KnownUserQuery):
+                raise ValueError("LightGCN supports Known-User queries only")
+            if self.artifact.lightgcn is None:
+                raise ValueError("Serving Artifact has no LightGCN payload")
+            try:
+                lightgcn_history = self.artifact.lightgcn.subject_histories[query.subject_id]
+            except KeyError as error:
+                raise UnknownSubjectError(query.subject_id) from error
+            return RecommendationResult(
+                query_mode=query.mode,
+                candidates=self.artifact.lightgcn.recommend_for_subject(
+                    query.subject_id, lightgcn_history, top_n
+                ),
+                retriever="lightgcn",
+                artifact_fingerprint=str(self.artifact.manifest["data_snapshot_fingerprint"]),
+                artifact_id=self.artifact.artifact_id,
+                bundle_fingerprint=self.artifact.artifact_fingerprint,
+            )
         if retriever != "multivae":
             raise ValueError(f"unsupported serving retriever: {retriever}")
         if isinstance(query, EmptyHistoryQuery):
             raise ValueError("Mult-VAE does not serve Empty-History queries")
-        if self.artifact.multivae is None:
+        multivae = self.artifact.multivae
+        if multivae is None:
             raise ValueError("Serving Artifact has no Mult-VAE payload")
+        history: tuple[int, ...]
         if isinstance(query, KnownUserQuery):
-            history = self.artifact.multivae.subject_histories.get(query.subject_id)
-            if history is None:
+            known_history = multivae.subject_histories.get(query.subject_id)
+            if known_history is None:
                 raise UnknownSubjectError(query.subject_id)
+            history = known_history
         else:
             history = query.movie_ids
         return RecommendationResult(
             query_mode=query.mode,
-            candidates=self.artifact.multivae.recommend(history, top_n),
+            candidates=multivae.recommend(history, top_n),
             retriever="multivae",
             artifact_fingerprint=str(self.artifact.manifest["data_snapshot_fingerprint"]),
             artifact_id=self.artifact.artifact_id,

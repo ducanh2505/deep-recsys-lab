@@ -4,11 +4,17 @@ import math
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 from .event_store import DataSnapshot
 from .models import Candidate, PositiveInteraction, RatingEvent
 from .positive import derive_positive_interactions, history_movie_ids
-from .retriever import MAX_CANDIDATE_POOL, CandidateRetriever, validate_candidate_pool_limit
+from .retriever import (
+    MAX_CANDIDATE_POOL,
+    CandidateRetriever,
+    candidate_pool_for_query,
+    validate_candidate_pool_limit,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +25,15 @@ class EvaluationQuery:
     history: tuple[int, ...]
     gold_movie_id: int
     gold_event_id: str | None = None
+    query_mode: Literal["known_user", "history_only", "empty_history"] = "known_user"
+
+    def __post_init__(self) -> None:
+        if self.query_mode != "known_user":
+            raise ValueError("evaluation LightGCN cohorts support Known-User queries only")
+
+    @property
+    def mode(self) -> Literal["known_user"]:
+        return "known_user"
 
     @property
     def gold_candidate(self) -> int:
@@ -95,6 +110,7 @@ class EvaluationReport:
                     "history": list(query.history),
                     "gold_movie_id": query.gold_movie_id,
                     "gold_event_id": query.gold_event_id,
+                    "query_mode": query.mode,
                 }
                 for query in self.cohort.queries
             ],
@@ -265,11 +281,18 @@ def evaluate_retrievers(
     """Evaluate every retriever, RRF, and Oracle Union over the same cohort."""
 
     validate_candidate_pool_limit(pool_limit)
+    if any(query.mode != "known_user" for query in cohort.queries):
+        raise ValueError("LightGCN evaluation and fusion require Known-User queries")
     retriever_pools: dict[str, dict[int, tuple[Candidate, ...]]] = {}
     for name, retriever in retrievers.items():
         retriever_pools[name] = {
             query.subject_id: _unobserved_pool(
-                retriever.candidate_pool(query.history, limit=pool_limit),
+                candidate_pool_for_query(
+                    retriever,
+                    query.subject_id,
+                    query.history,
+                    limit=pool_limit,
+                ),
                 query.history,
                 pool_limit,
             )

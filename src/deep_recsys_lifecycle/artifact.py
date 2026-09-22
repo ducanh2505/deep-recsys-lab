@@ -14,7 +14,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from .serving import MultVAERetriever, PopularityRetriever
+from .serving import LightGCNRetriever, MultVAERetriever, PopularityRetriever
 
 if TYPE_CHECKING:
     from .event_store import DataSnapshot
@@ -125,6 +125,7 @@ class ArtifactManifest:
     training_device: str
     serving_device: str
     multivae_training: dict[str, Any]
+    lightgcn_training: dict[str, Any]
     timings: dict[str, float]
     evaluation_metrics: dict[str, Any]
     payload_inventory: tuple[PayloadDescriptor, ...]
@@ -250,6 +251,21 @@ class ArtifactManifest:
             _validate_multivae_training(raw_multivae_training, random_seed)
         multivae_training = dict(raw_multivae_training)
 
+        raw_lightgcn_training = value.get("lightgcn_training", {})
+        if configuration.get("lightgcn_enabled") and "lightgcn_training" not in value:
+            raise ArtifactValidationError("manifest is missing LightGCN training provenance")
+        if raw_lightgcn_training and configuration.get("lightgcn_enabled") is not True:
+            raise ArtifactValidationError("manifest LightGCN configuration is incomplete")
+        if configuration.get("lightgcn_enabled") is True and not isinstance(
+            configuration.get("lightgcn"), Mapping
+        ):
+            raise ArtifactValidationError("manifest LightGCN configuration is missing")
+        if not isinstance(raw_lightgcn_training, Mapping):
+            raise ArtifactValidationError("manifest lightgcn_training must be an object")
+        if raw_lightgcn_training:
+            _validate_lightgcn_training(raw_lightgcn_training, random_seed)
+        lightgcn_training = dict(raw_lightgcn_training)
+
         raw_timings = value["timings"]
         if not isinstance(raw_timings, Mapping):
             raise ArtifactValidationError("manifest timings must be an object")
@@ -301,6 +317,7 @@ class ArtifactManifest:
             training_device=training_device,
             serving_device=serving_device,
             multivae_training=multivae_training,
+            lightgcn_training=lightgcn_training,
             timings=timings,
             evaluation_metrics=evaluation_metrics,
             payload_inventory=payload_inventory,
@@ -334,6 +351,7 @@ class ArtifactManifest:
             "training_device": self.training_device,
             "serving_device": self.serving_device,
             "multivae_training": self.multivae_training,
+            "lightgcn_training": self.lightgcn_training,
             "timings": self.timings,
             "evaluation_metrics": self.evaluation_metrics,
             "payload_inventory": [item.to_dict() for item in self.payload_inventory],
@@ -369,11 +387,13 @@ class ServingArtifact:
         manifest: dict[str, Any],
         model: PopularityRetriever,
         multivae: MultVAERetriever | None = None,
+        lightgcn: LightGCNRetriever | None = None,
     ) -> None:
         self.path = path
         self.manifest = manifest
         self.model = model
         self.multivae = multivae
+        self.lightgcn = lightgcn
 
     @property
     def artifact_id(self) -> str:
@@ -407,6 +427,7 @@ class ServingArtifact:
         evaluation_metrics: Mapping[str, Any] | None = None,
         source_revision: str | None = None,
         multivae_model: MultVAERetriever | None = None,
+        lightgcn_model: LightGCNRetriever | None = None,
     ) -> ServingArtifact:
         # Keep fitting behind the export seam; the runtime loader imports only serving.py.
         from .multivae import fit_multivae
@@ -432,8 +453,12 @@ class ServingArtifact:
             "serving_device": serving_device,
             "multivae_enabled": True,
             "multivae": dict(fitted_multivae.configuration),
+            "lightgcn_enabled": lightgcn_model is not None,
             **dict(configuration or {}),
         }
+        if lightgcn_model is not None:
+            resolved_configuration["lightgcn_enabled"] = True
+            resolved_configuration["lightgcn"] = dict(lightgcn_model.configuration)
         configuration_checksum = canonical_configuration_checksum(resolved_configuration)
         source_revision_value = source_revision or resolve_source_revision()
         identity = {
@@ -475,12 +500,21 @@ class ServingArtifact:
             "training_device": resolved_training_device,
             "serving_device": serving_device,
             "multivae_training": multivae_metadata,
+            "lightgcn_training": (
+                dict(lightgcn_model.training_metadata) if lightgcn_model is not None else {}
+            ),
             "timings": resolved_timings,
             "evaluation_metrics": dict(evaluation_metrics or {}),
             "payload_inventory": [],
             "source_revision": source_revision_value,
         }
-        return cls(path=path, manifest=manifest, model=model, multivae=fitted_multivae)
+        return cls(
+            path=path,
+            manifest=manifest,
+            model=model,
+            multivae=fitted_multivae,
+            lightgcn=lightgcn_model,
+        )
 
     def save(self) -> None:
         """Write one new bundle; an existing directory is never modified."""
@@ -491,13 +525,14 @@ class ServingArtifact:
         self.path.mkdir()
         try:
             export_started = monotonic()
-            model_payload = canonical_json_bytes(
-                {
-                    "payload_schema_version": 2,
-                    "popularity": self.model.to_dict(),
-                    "multivae": self.multivae.to_dict() if self.multivae is not None else None,
-                }
-            )
+            payload: dict[str, object] = {
+                "payload_schema_version": 3 if self.lightgcn is not None else 2,
+                "popularity": self.model.to_dict(),
+                "multivae": self.multivae.to_dict() if self.multivae is not None else None,
+            }
+            if self.lightgcn is not None:
+                payload["lightgcn"] = self.lightgcn.to_dict()
+            model_payload = canonical_json_bytes(payload)
             model_sha256 = sha256_bytes(model_payload)
             manifest = {**self.manifest}
             manifest["timings"] = {
@@ -584,8 +619,9 @@ class ServingArtifact:
         if not isinstance(model_value, Mapping):
             raise ArtifactValidationError("Serving Artifact model payload must be a JSON object")
         try:
+            payload_schema_version = model_value.get("payload_schema_version")
             if "payload_schema_version" in model_value:
-                if model_value.get("payload_schema_version") != 2:
+                if payload_schema_version not in {2, 3}:
                     raise ValueError("unsupported composite payload schema")
                 raw_popularity = model_value.get("popularity")
                 raw_multivae = model_value.get("multivae")
@@ -593,9 +629,17 @@ class ServingArtifact:
                     raise ValueError("composite payload is missing Popularity or Mult-VAE state")
                 model = PopularityRetriever.from_dict(raw_popularity)
                 multivae = MultVAERetriever.from_dict(raw_multivae)
+                raw_lightgcn = model_value.get("lightgcn")
+                if payload_schema_version == 3:
+                    if not isinstance(raw_lightgcn, Mapping):
+                        raise ValueError("composite payload is missing LightGCN state")
+                    lightgcn = LightGCNRetriever.from_dict(raw_lightgcn)
+                else:
+                    lightgcn = None
             else:
                 model = PopularityRetriever.from_dict(model_value)
                 multivae = None
+                lightgcn = None
         except ValueError as error:
             raise ArtifactValidationError(
                 f"Serving Artifact model payload is invalid: {error}"
@@ -617,7 +661,30 @@ class ServingArtifact:
                 )
         if manifest.get("configuration", {}).get("multivae_enabled") and multivae is None:
             raise ArtifactValidationError("Serving Artifact is missing its Mult-VAE payload")
-        return cls(path=path, manifest=manifest, model=model, multivae=multivae)
+        if lightgcn is not None:
+            manifest_lightgcn_configuration = manifest.get("configuration", {}).get("lightgcn")
+            if not isinstance(manifest_lightgcn_configuration, Mapping) or dict(
+                manifest_lightgcn_configuration
+            ) != dict(lightgcn.configuration):
+                raise ArtifactValidationError(
+                    "Serving Artifact LightGCN configuration is incompatible with its manifest"
+                )
+            manifest_training = manifest.get("lightgcn_training")
+            if not isinstance(manifest_training, Mapping) or dict(manifest_training) != dict(
+                lightgcn.training_metadata
+            ):
+                raise ArtifactValidationError(
+                    "Serving Artifact LightGCN provenance is incompatible with its manifest"
+                )
+        if manifest.get("configuration", {}).get("lightgcn_enabled") and lightgcn is None:
+            raise ArtifactValidationError("Serving Artifact is missing its LightGCN payload")
+        return cls(
+            path=path,
+            manifest=manifest,
+            model=model,
+            multivae=multivae,
+            lightgcn=lightgcn,
+        )
 
     def health_metadata(self) -> dict[str, object]:
         return {
@@ -629,6 +696,7 @@ class ServingArtifact:
             "query_modes": self.manifest["query_modes"],
             "serving_device": self.manifest["serving_device"],
             "multivae_loaded": self.multivae is not None,
+            "lightgcn_loaded": self.lightgcn is not None,
         }
 
 
@@ -879,6 +947,42 @@ def _validate_multivae_training(value: Mapping[object, object], random_seed: int
         raise ArtifactValidationError("manifest Mult-VAE fallback_reason must be null or text")
     if not isinstance(value.get("hyperparameters"), Mapping):
         raise ArtifactValidationError("manifest Mult-VAE hyperparameters must be an object")
+
+
+def _validate_lightgcn_training(value: Mapping[object, object], random_seed: int) -> None:
+    required = {
+        "requested_device",
+        "actual_device",
+        "duration_seconds",
+        "seed",
+        "fallback_reason",
+        "hyperparameters",
+    }
+    missing = sorted(required - value.keys())
+    if missing:
+        raise ArtifactValidationError(f"manifest LightGCN training is missing: {missing}")
+    requested_device = value.get("requested_device")
+    actual_device = value.get("actual_device")
+    if requested_device not in {"cpu", "mps"}:
+        raise ArtifactValidationError("manifest LightGCN requested_device is invalid")
+    if actual_device not in {"cpu", "mps"}:
+        raise ArtifactValidationError("manifest LightGCN actual_device is invalid")
+    if _number_value(value.get("duration_seconds"), "LightGCN duration_seconds") < 0:
+        raise ArtifactValidationError("LightGCN duration_seconds cannot be negative")
+    seed = value.get("seed")
+    if not isinstance(seed, int) or isinstance(seed, bool) or seed != random_seed:
+        raise ArtifactValidationError("manifest LightGCN seed is incompatible with random_seed")
+    fallback_reason = value.get("fallback_reason")
+    if fallback_reason is not None and (
+        not isinstance(fallback_reason, str) or not fallback_reason
+    ):
+        raise ArtifactValidationError("manifest LightGCN fallback_reason must be null or text")
+    if not isinstance(value.get("hyperparameters"), Mapping):
+        raise ArtifactValidationError("manifest LightGCN hyperparameters must be an object")
+    benchmark_seconds = value.get("benchmark_seconds", {})
+    if not isinstance(benchmark_seconds, Mapping):
+        raise ArtifactValidationError("manifest LightGCN benchmark_seconds must be an object")
+    _validate_metric_tree(benchmark_seconds, "LightGCN benchmark_seconds")
 
 
 def _validate_sha256(value: str, label: str) -> None:

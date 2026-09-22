@@ -49,6 +49,16 @@ def validate_smoke_queries(artifact: ServingArtifact) -> None:
                 )
             _validate_response(artifact, first, query.mode, observed, expected_retriever="multivae")
 
+    if artifact.manifest.get("configuration", {}).get("lightgcn_enabled"):
+        if artifact.lightgcn is None:
+            raise SmokeValidationError("artifact is missing the LightGCN payload")
+        query, observed = _known_user_example(artifact)
+        first = service.recommend_with_retriever(query, "lightgcn").to_dict()
+        second = service.recommend_with_retriever(query, "lightgcn").to_dict()
+        if first != second:
+            raise SmokeValidationError("LightGCN smoke query is not deterministic")
+        _validate_response(artifact, first, query.mode, observed, expected_retriever="lightgcn")
+
     health = artifact.health_metadata()
     if health.get("status") != "ok":
         raise SmokeValidationError("artifact health metadata is not healthy")

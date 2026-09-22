@@ -14,12 +14,13 @@ from .event_store import AppendOnlyEventStore
 from .fixture import load_movielens_fixture
 from .itemknn import fit_itemknn
 from .kafka import KafkaBoundary
+from .lightgcn import LightGCNConfig, fit_lightgcn
 from .models import RatingEvent
 from .multivae import fit_multivae
 from .popularity import fit_popularity
 from .positive import derive_positive_interactions
 from .report import write_static_report
-from .serving import MultVAERetriever
+from .serving import LightGCNRetriever, MultVAERetriever
 from .temporal import TemporalSplit, split_temporal_events
 from .validation import validate_smoke_queries
 
@@ -42,6 +43,7 @@ class FastLifecycleResult:
     temporal_split: TemporalSplit
     evaluation: EvaluationReport
     multivae: MultVAERetriever
+    lightgcn: LightGCNRetriever
 
 
 def run_fast_lifecycle(
@@ -53,6 +55,10 @@ def run_fast_lifecycle(
     source_revision: str | None = None,
     smoke_validator: Callable[[ServingArtifact], None] | None = None,
     random_seed: int = 42,
+    lightgcn_config: LightGCNConfig | None = None,
+    lightgcn_device_preference: str = "auto",
+    lightgcn_mps_probe: Callable[[], bool] | None = None,
+    lightgcn_device_benchmark: Callable[[str], float] | None = None,
 ) -> FastLifecycleResult:
     """Run ingest → evaluate → export → validate → smoke → activate → report."""
 
@@ -111,9 +117,23 @@ def run_fast_lifecycle(
     popularity = fit_popularity(data_snapshot, snapshot_interactions)
     itemknn = fit_itemknn(data_snapshot, snapshot_interactions)
     multivae = fit_multivae(data_snapshot, snapshot_interactions, seed=random_seed)
+    lightgcn = fit_lightgcn(
+        data_snapshot,
+        snapshot_interactions,
+        config=lightgcn_config or LightGCNConfig(seed=random_seed),
+        seed=random_seed,
+        device_preference=lightgcn_device_preference,
+        mps_probe=lightgcn_mps_probe,
+        device_benchmark=lightgcn_device_benchmark,
+    )
     cohort = build_evaluation_cohort(data_snapshot, temporal_split.future_window_events)
     evaluation = evaluate_retrievers(
-        {"popularity": popularity, "itemknn": itemknn, "multivae": multivae},
+        {
+            "popularity": popularity,
+            "itemknn": itemknn,
+            "multivae": multivae,
+            "lightgcn": lightgcn,
+        },
         cohort,
     )
     training_seconds = monotonic() - training_started
@@ -136,6 +156,7 @@ def run_fast_lifecycle(
             evaluation_metrics=evaluation_metrics,
             source_revision=source_revision,
             multivae_model=multivae,
+            lightgcn_model=lightgcn,
         )
         artifact.save()
         staged_artifact = ServingArtifact.load(staging_path)
@@ -178,4 +199,5 @@ def run_fast_lifecycle(
         temporal_split=temporal_split,
         evaluation=evaluation,
         multivae=multivae,
+        lightgcn=lightgcn,
     )
