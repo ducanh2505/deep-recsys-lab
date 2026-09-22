@@ -17,6 +17,7 @@ from .retriever import (
 )
 
 EvaluationQueryMode = Literal["known_user", "history_only"]
+HISTORY_LENGTH_SEGMENTS: tuple[str, ...] = ("1-4", "5-19", "20+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -499,3 +500,57 @@ def _unobserved_pool(
         if len(unobserved) == limit:
             break
     return tuple(unobserved)
+
+
+def history_length_segment(history_length: int) -> str:
+    """Return the report's stable cold-user history-length bucket."""
+
+    if history_length < 0:
+        raise ValueError("history_length cannot be negative")
+    if history_length <= 4:
+        return "1-4"
+    if history_length <= 19:
+        return "5-19"
+    return "20+"
+
+
+def history_segment_metrics(report: EvaluationReport) -> dict[str, dict[str, object]]:
+    """Return aggregate metrics for the three declared history-length segments.
+
+    The output contains only cohort denominators and metric aggregates. Query identities,
+    histories, pools, and Gold Candidates remain outside the report payload.
+    """
+
+    evaluations: list[tuple[str, RetrieverEvaluation, bool]] = [
+        (name, evaluation, False) for name, evaluation in report.retrievers.items()
+    ]
+    if report.best_single is not None:
+        evaluations.append(("best_single", report.best_single, False))
+    evaluations.append(("rrf", report.rrf, False))
+    if report.lhf is not None:
+        evaluations.append(("lhf", report.lhf, False))
+    if report.oracle_union is not None:
+        evaluations.append(("oracle_union", report.oracle_union, True))
+    result: dict[str, dict[str, object]] = {}
+    for segment in HISTORY_LENGTH_SEGMENTS:
+        queries = tuple(
+            query
+            for query in report.cohort
+            if history_length_segment(len(query.history)) == segment
+        )
+        segment_cohort = EvaluationCohort(queries=queries)
+        metrics: dict[str, dict[str, int | float]] = {}
+        for name, evaluation, unbounded in evaluations:
+            pools = {query.pool_key: evaluation.pools.get(query.pool_key, ()) for query in queries}
+            segment_metrics = (
+                _compute_unbounded_metrics(segment_cohort, pools, ranking_cutoff=10)
+                if unbounded
+                else compute_metrics(segment_cohort, pools, pool_limit=MAX_CANDIDATE_POOL)
+            )
+            metrics[name] = segment_metrics.to_dict()
+        result[segment] = {
+            "cohort_size": segment_cohort.size,
+            "denominator": segment_cohort.size,
+            "metrics": metrics,
+        }
+    return result

@@ -5,11 +5,23 @@ from deep_recsys_lifecycle.evaluation import (
     EvaluationQuery,
     compute_metrics,
     evaluate_retrievers,
+    history_length_segment,
     oracle_union,
     oracle_union_coverage,
     rrf_fuse,
 )
 from deep_recsys_lifecycle.models import Candidate
+
+
+def test_history_segments_use_declared_boundaries() -> None:
+    assert [history_length_segment(value) for value in (1, 4, 5, 19, 20, 99)] == [
+        "1-4",
+        "1-4",
+        "5-19",
+        "5-19",
+        "20+",
+        "20+",
+    ]
 
 
 def test_metrics_match_a_hand_checkable_candidate_pool_fixture() -> None:

@@ -103,7 +103,8 @@ cumulative boundaries:
 
 `artifacts/rolling/` contains a small `rolling_checkpoint.json` ledger plus append-only
 `event_store/`, `snapshots/stage-*.json`, `evaluations/stage-*.json`, `stages/stage-*.json`,
-immutable artifact directories, `active.json`, and `report.html`. A stage is reusable only when
+immutable artifact directories, `active.json`, `latency_benchmark.json`, and
+`report.html`. A stage is reusable only when
 its stage record, snapshot, evaluation record (for 50–90), artifact manifest/payload checksums,
 source dataset checksum, configuration checksum, seed, and source revision all match. A directory
 left behind without a complete record is not treated as complete. Invalid partial/corrupt state
@@ -122,6 +123,14 @@ Rolling manifests additionally carry `rolling_stage`, `rolling_configuration_sha
 and evaluation record carry the per-mode baseline/LHF metrics and measured evaluation/ingestion
 timings because the published bundle is immutable before its Future Window is evaluated.
 
+The rolling output also contains `latency_benchmark.json`, a separate mutable aggregate
+record produced after the active 100% artifact is loaded. It measures the FastAPI request path
+through in-process ASGI calls at concurrency one for Known-User, History-Only, and Empty-History
+with `top_n=10`; artifact loading, training, and server startup are outside the timed
+samples. It records runtime-confirmed OS/CPU/Python evidence, percentile method, warm-up/sample
+counts, p50/p95/p99, throughput, and each mode's SLO status. A failed or incomplete benchmark is
+rendered as failed/not measured and never changes an immutable stage artifact.
+
 This is a local checkpoint/resume mechanism only. It does not add a database, distributed
-scheduler, multi-host lock, model registry, MovieLens 20M download, latency benchmark, or the
-portfolio report redesign from Issue #41.
+scheduler, multi-host lock, model registry, MovieLens 20M download, Kubernetes deployment, public
+hosting, frontend app, or interactive dashboard.

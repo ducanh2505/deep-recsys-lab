@@ -9,9 +9,9 @@ report.
 This orphan branch is intentionally independent from the repository's `main` history. Ticket
 #34 implements the ingestion and Popularity tracer bullet; #35 adds the leakage-free
 evaluation stage; #36 adds immutable activation; #37 adds the Mult-VAE vertical slice; #38
-adds the LightGCN vertical slice; #39 adds query-mode Learned Hybrid Fusion; and #40 adds the
-rolling 50-to-100 showcase. Portfolio latency benchmarking and the final report redesign remain
-out of scope here (#41).
+adds the LightGCN vertical slice; #39 adds query-mode Learned Hybrid Fusion; #40 adds the
+rolling 50-to-100 showcase; and #41 completes the static portfolio report and serving-latency
+evidence.
 
 ## Documents
 
@@ -53,8 +53,53 @@ out of scope here (#41).
 - The rolling command advances cumulative 50%, 60%, 70%, 80%, 90%, and 100% Data Snapshots;
   each 50–90% Future Window is evaluated before its Kafka ingest, and only the smoke-tested
   100% artifact is activated.
+- The rolling command benchmarks the loaded 100% CPU artifact after activation. It records
+  warm-up/sample counts, p50/p95/p99, throughput, runtime hardware, and per-mode SLO status in
+  `latency_benchmark.json`; the report keeps missing samples and failures visible.
 
-Downloaded MovieLens data and generated artifacts are never committed.
+Downloaded MovieLens data and generated artifacts are never committed. The checked-in fixture is
+deliberately local and small; this repository does not yet provide a pipeline that runs the full
+MovieLens 20M dataset, so fixture numbers are not 20M results.
+
+## Reproduce the portfolio report from a clean checkout
+
+Requirements: Python 3.12, `uv`, Docker Desktop, and a shell with `open` (or another local HTML
+viewer). From a clean checkout of this revision, run the following from the repository root. The
+command uses the official Apache Kafka Compose service and the deterministic fast fixture; it does
+not download MovieLens 20M.
+
+```bash
+uv sync --dev
+docker compose up -d kafka
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  uv run movie-recsys rolling --output artifacts/rolling
+open artifacts/rolling/report.html
+```
+
+`rolling` creates the six cumulative lifecycle stages, the smoke-tested active 100% artifact,
+`latency_benchmark.json`, and the self-contained `report.html`. The HTML file can be opened
+directly from disk: it has inline CSS and aggregate JSON evidence and does not need a web server,
+CDN, frontend, or interactive dashboard. The report's headline quality is the 90% → 100% Future
+Window evaluation; Stage 100 has no future-quality claim. The native-thread limits keep this small
+fixture and LightGBM reruns reproducible; the report still records the runtime-confirmed CPU, OS,
+Python version, and training/serving device evidence.
+
+Check which artifact is active and inspect the API provenance:
+
+```bash
+cat artifacts/rolling/active.json
+uv run movie-recsys serve --artifact artifacts/rolling
+curl -s http://127.0.0.1:8000/health
+curl -s -X POST http://127.0.0.1:8000/recommendations \
+  -H 'content-type: application/json' \
+  -d '{"subject_id": 1, "top_n": 10}'
+```
+
+The benchmark is an in-process ASGI request-path measurement at concurrency one. The active
+artifact is loaded before warm-up; training, artifact loading, and server startup are excluded
+from each sample. It is not network or loopback latency. Known-User and History-Only have a
+200 ms p95 target; Empty-History has a 20 ms p95 target. An error, too-small sample, or SLO
+failure still produces the report with its reason and any successful measurements.
 
 ## Run the fast evaluation lifecycle
 
@@ -116,7 +161,8 @@ The rolling command uses the same deterministic fixture and local Kafka boundary
 ingests only the first 50% at the beginning of the run:
 
 ```bash
-uv run movie-recsys rolling --output artifacts/rolling
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  uv run movie-recsys rolling --output artifacts/rolling
 ```
 
 For each stage, the command materializes the cumulative prefix, fits all retrievers and the
@@ -127,12 +173,15 @@ claim. The final headline quality is the 90→100% evaluation.
 
 The output directory contains `rolling_checkpoint.json`, append-only `event_store/` batches,
 per-stage `snapshots/`, `evaluations/`, `stages/`, immutable artifact directories, `active.json`,
-and `report.html`. A rerun with the same source, seed, configuration, and code revision validates
-and reuses completed stages without changing their artifact bytes. A partial or corrupt stage is
+`latency_benchmark.json`, and `report.html`. A rerun with the same source, seed,
+configuration, and code revision validates and reuses completed stages without changing their
+artifact bytes. A partial or corrupt stage is
 quarantined and rebuilt; a source/configuration/code-revision mismatch fails instead of mixing
 runs. Kafka replay remains at-least-once and deterministic Event IDs keep duplicate evidence out
 of snapshots and training.
 
 The rolling showcase deliberately remains local and small: it does not download MovieLens 20M,
-add a database, distributed scheduler, multi-host lock, registry, latency benchmark, or the
-portfolio report redesign planned for #41.
+add a database, distributed scheduler, multi-host lock, registry, Kubernetes deployment, public
+hosting, frontend app, or interactive dashboard. `fast` remains available for the original
+single-50% lifecycle smoke path; use `rolling` for the complete portfolio report and three-mode
+latency evidence.

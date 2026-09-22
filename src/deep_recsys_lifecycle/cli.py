@@ -70,7 +70,7 @@ def rolling(
         str, typer.Option(help="Kafka bootstrap address.")
     ] = "localhost:9092",
 ) -> None:
-    """Run the prequential 50%, 60%, 70%, 80%, 90%, and 100% lifecycle."""
+    """Run the rolling lifecycle, portfolio report, and three-mode warm CPU benchmark."""
 
     _ensure_kafka(bootstrap_servers)
     result = run_rolling_lifecycle(
@@ -79,6 +79,7 @@ def rolling(
     )
     typer.echo(f"Active 100% Serving Artifact: {result.artifact_path}")
     typer.echo(f"Active pointer: {result.active_pointer_path}")
+    typer.echo(f"Latency benchmark: {result.latency_benchmark_path}")
     typer.echo(f"Static report: {result.report_path}")
 
 

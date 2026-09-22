@@ -226,3 +226,38 @@ def test_active_100_artifact_survives_api_restart(tmp_path: Path) -> None:
         first.post("/recommendations", json=payload).json()
         == restarted.post("/recommendations", json=payload).json()
     )
+
+
+def test_rolling_report_records_three_mode_latency_evidence_without_a_machine_slo_gate(
+    tmp_path: Path,
+) -> None:
+    result = run_rolling_lifecycle(
+        output_dir=tmp_path / "rolling",
+        kafka=InMemoryKafkaBoundary(),
+        source_events=load_movielens_fixture(),
+    )
+
+    benchmark = json.loads(result.latency_benchmark_path.read_text(encoding="utf-8"))
+
+    assert benchmark["artifact_id"] == result.active_artifact_id
+    assert benchmark["artifact_cutoff_percentage"] == 100
+    assert benchmark["serving_device"] == "cpu"
+    assert benchmark["top_n"] == 10
+    assert benchmark["concurrency"] == 1
+    assert benchmark["warmup_count"] > 0
+    assert benchmark["requested_sample_count"] > 0
+    assert set(benchmark["modes"]) == {"known_user", "history_only", "empty_history"}
+    for mode in benchmark["modes"].values():
+        assert mode["slo_status"] in {"pass", "fail", "not_measured"}
+        assert mode["successful_sample_count"] >= 0
+
+    report = result.report_path.read_text(encoding="utf-8")
+    assert 'id="latency-evidence"' in report
+    assert "Known-User" in report
+    assert "History-Only" in report
+    assert "Empty-History" in report
+
+    stage_90 = next(stage for stage in result.stages if stage.percentage == 90)
+    assert stage_90.evaluation is not None
+    for mode in ("known_user", "history_only"):
+        assert set(stage_90.evaluation[mode]["history_segments"]) == {"1-4", "5-19", "20+"}

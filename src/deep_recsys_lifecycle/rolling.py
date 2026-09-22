@@ -19,10 +19,15 @@ from .artifact import (
     sha256_bytes,
     validate_manifest,
 )
+from .benchmark import (
+    detect_runtime_environment,
+    run_latency_benchmark,
+)
 from .evaluation import (
     EvaluationReport,
     build_evaluation_cohort,
     evaluate_retrievers,
+    history_segment_metrics,
 )
 from .event_store import AppendOnlyEventStore, DataSnapshot
 from .fixture import load_movielens_fixture
@@ -84,6 +89,7 @@ class RollingLifecycleResult:
     active_pointer_path: Path
     checkpoint_path: Path
     report_path: Path
+    latency_benchmark_path: Path
     stages: tuple[RollingStageResult, ...]
     active_artifact_id: str
     source_event_count: int
@@ -356,6 +362,20 @@ def run_rolling_lifecycle(
         raise RollingLifecycleError(
             "rolling lifecycle completed but active pointer does not target the 100% artifact"
         )
+    active_artifact = artifact_store.load_active()
+    benchmark_path = output_dir / "latency_benchmark.json"
+    try:
+        latency_benchmark = run_latency_benchmark(active_artifact)
+    except Exception as error:
+        latency_benchmark = _failed_latency_benchmark_record(
+            artifact=active_artifact,
+            reason=f"benchmark failed: {type(error).__name__}: {error}",
+        )
+    benchmark_path.write_text(
+        json.dumps(latency_benchmark, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
     report_path = output_dir / "report.html"
     write_rolling_report(
         report_path,
@@ -366,6 +386,8 @@ def run_rolling_lifecycle(
         dataset_checksum=source_checksum,
         active_artifact_id=active_artifact_id,
         source_revision=resolved_revision,
+        configuration=configuration,
+        latency_benchmark=latency_benchmark,
     )
     return RollingLifecycleResult(
         output_dir=output_dir,
@@ -374,6 +396,7 @@ def run_rolling_lifecycle(
         active_pointer_path=artifact_store.active_pointer_path,
         checkpoint_path=checkpoint_path,
         report_path=report_path,
+        latency_benchmark_path=benchmark_path,
         stages=tuple(stage_results),
         active_artifact_id=active_artifact_id,
         source_event_count=len(ordered_events),
@@ -1409,6 +1432,7 @@ def _artifact_retrievers(artifact: ServingArtifact) -> dict[str, CandidateRetrie
 
 
 def _evaluation_summary(report: EvaluationReport) -> dict[str, Any]:
+    oracle_metrics = report.oracle_union.metrics if report.oracle_union is not None else None
     return {
         "query_mode": report.query_mode,
         "cohort_size": report.cohort.size,
@@ -1417,6 +1441,11 @@ def _evaluation_summary(report: EvaluationReport) -> dict[str, Any]:
         "best_single": report.best_single.metrics.to_dict() if report.best_single else {},
         "oracle_union": report.oracle_union.metrics.to_dict() if report.oracle_union else {},
         "oracle_union_coverage": report.oracle_union_coverage,
+        "retrieval_failure_count": (
+            report.cohort.size - oracle_metrics.covered_query_count
+            if oracle_metrics is not None
+            else None
+        ),
         "oracle_headroom_denominator": report.oracle_headroom_denominator,
         "oracle_headroom_realized": (
             report.oracle_headroom_realized if report.oracle_headroom_realized is not None else -1.0
@@ -1425,7 +1454,52 @@ def _evaluation_summary(report: EvaluationReport) -> dict[str, Any]:
             name: evaluation.metrics.to_dict() for name, evaluation in report.retrievers.items()
         },
         "rrf": report.rrf.metrics.to_dict(),
+        "history_segments": history_segment_metrics(report),
         "lhf": report.lhf.metrics.to_dict() if report.lhf else {},
+    }
+
+
+def _failed_latency_benchmark_record(
+    *,
+    artifact: ServingArtifact,
+    reason: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": "failed",
+        "artifact_id": artifact.artifact_id,
+        "artifact_cutoff_percentage": artifact.manifest.get("data_cutoff_percentage"),
+        "artifact_loaded_before_measurement": True,
+        "serving_device": artifact.manifest.get("serving_device", "cpu"),
+        "top_n": 10,
+        "concurrency": 1,
+        "warmup_count": 0,
+        "requested_sample_count": 0,
+        "percentile_method": "statistics.quantiles(method='inclusive')",
+        "method": "benchmark did not complete; no latency claim is made",
+        "environment": detect_runtime_environment(),
+        "modes": {
+            mode: {
+                "measurement_status": "failed",
+                "slo_status": "not_measured",
+                "warmup_count": 0,
+                "warmup_success_count": 0,
+                "requested_sample_count": 0,
+                "successful_sample_count": 0,
+                "failed_sample_count": 0,
+                "p50_ms": None,
+                "p95_ms": None,
+                "p99_ms": None,
+                "throughput_rps": None,
+                "slo_target_p95_ms": target,
+                "reason": reason,
+            }
+            for mode, target in (
+                ("known_user", 200.0),
+                ("history_only", 200.0),
+                ("empty_history", 20.0),
+            )
+        },
     }
 
 
