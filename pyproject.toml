@@ -11,6 +11,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "confluent-kafka>=2.8,<3",
     "fastapi>=0.115,<1",
+    "lightgbm>=4.5,<5",
     "pyarrow>=18,<23",
     "torch>=2.5,<3",
     "typer>=0.15,<1",

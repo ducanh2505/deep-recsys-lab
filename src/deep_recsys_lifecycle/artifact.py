@@ -14,7 +14,13 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from .serving import LightGCNRetriever, MultVAERetriever, PopularityRetriever
+from .fusion import LearnedHybridFusion, untrained_fusion_classifier
+from .serving import (
+    ItemKNNRetriever,
+    LightGCNRetriever,
+    MultVAERetriever,
+    PopularityRetriever,
+)
 
 if TYPE_CHECKING:
     from .event_store import DataSnapshot
@@ -126,6 +132,7 @@ class ArtifactManifest:
     serving_device: str
     multivae_training: dict[str, Any]
     lightgcn_training: dict[str, Any]
+    fusion_training: dict[str, Any]
     timings: dict[str, float]
     evaluation_metrics: dict[str, Any]
     payload_inventory: tuple[PayloadDescriptor, ...]
@@ -217,6 +224,9 @@ class ArtifactManifest:
         _validate_sha256(configuration_checksum, "configuration_sha256")
         if configuration.get("retriever") != retriever:
             raise ArtifactValidationError("manifest configuration is incompatible with retriever")
+        itemknn_enabled = configuration.get("itemknn_enabled", False)
+        if not isinstance(itemknn_enabled, bool):
+            raise ArtifactValidationError("manifest itemknn_enabled must be boolean")
 
         random_seed = _required_int(value, "random_seed")
         training_device = _required_string(value, "training_device")
@@ -265,6 +275,26 @@ class ArtifactManifest:
         if raw_lightgcn_training:
             _validate_lightgcn_training(raw_lightgcn_training, random_seed)
         lightgcn_training = dict(raw_lightgcn_training)
+
+        fusion_enabled = configuration.get("fusion_enabled", False)
+        if not isinstance(fusion_enabled, bool):
+            raise ArtifactValidationError("manifest fusion_enabled must be boolean")
+        if fusion_enabled:
+            for mode in ("known_user_fusion", "history_only_fusion"):
+                if not isinstance(configuration.get(mode), Mapping):
+                    raise ArtifactValidationError(f"manifest configuration is missing {mode}")
+        raw_fusion_training = value.get("fusion_training", {})
+        if fusion_enabled and "fusion_training" not in value:
+            raise ArtifactValidationError("manifest is missing fusion training provenance")
+        if not isinstance(raw_fusion_training, Mapping):
+            raise ArtifactValidationError("manifest fusion_training must be an object")
+        if fusion_enabled and set(raw_fusion_training) != {"known_user", "history_only"}:
+            raise ArtifactValidationError("manifest fusion training must contain both query modes")
+        fusion_training = {
+            str(mode): dict(metadata)
+            for mode, metadata in raw_fusion_training.items()
+            if isinstance(mode, str) and isinstance(metadata, Mapping)
+        }
 
         raw_timings = value["timings"]
         if not isinstance(raw_timings, Mapping):
@@ -318,6 +348,7 @@ class ArtifactManifest:
             serving_device=serving_device,
             multivae_training=multivae_training,
             lightgcn_training=lightgcn_training,
+            fusion_training=fusion_training,
             timings=timings,
             evaluation_metrics=evaluation_metrics,
             payload_inventory=payload_inventory,
@@ -352,6 +383,7 @@ class ArtifactManifest:
             "serving_device": self.serving_device,
             "multivae_training": self.multivae_training,
             "lightgcn_training": self.lightgcn_training,
+            "fusion_training": self.fusion_training,
             "timings": self.timings,
             "evaluation_metrics": self.evaluation_metrics,
             "payload_inventory": [item.to_dict() for item in self.payload_inventory],
@@ -379,21 +411,27 @@ def validate_manifest(value: object) -> ArtifactManifest:
 
 
 class ServingArtifact:
-    """An immutable, self-describing Popularity serving bundle."""
+    """An immutable, self-describing CPU serving bundle."""
 
     def __init__(
         self,
         path: Path,
         manifest: dict[str, Any],
         model: PopularityRetriever,
+        itemknn: ItemKNNRetriever | None = None,
         multivae: MultVAERetriever | None = None,
         lightgcn: LightGCNRetriever | None = None,
+        known_user_fusion: LearnedHybridFusion | None = None,
+        history_only_fusion: LearnedHybridFusion | None = None,
     ) -> None:
         self.path = path
         self.manifest = manifest
         self.model = model
+        self.itemknn = itemknn
         self.multivae = multivae
         self.lightgcn = lightgcn
+        self.known_user_fusion = known_user_fusion
+        self.history_only_fusion = history_only_fusion
 
     @property
     def artifact_id(self) -> str:
@@ -426,15 +464,26 @@ class ServingArtifact:
         timings: Mapping[str, float] | None = None,
         evaluation_metrics: Mapping[str, Any] | None = None,
         source_revision: str | None = None,
+        itemknn_model: ItemKNNRetriever | None = None,
         multivae_model: MultVAERetriever | None = None,
         lightgcn_model: LightGCNRetriever | None = None,
+        known_user_fusion: LearnedHybridFusion | None = None,
+        history_only_fusion: LearnedHybridFusion | None = None,
     ) -> ServingArtifact:
         # Keep fitting behind the export seam; the runtime loader imports only serving.py.
+        from .itemknn import fit_itemknn
         from .multivae import fit_multivae
         from .popularity import fit_popularity
 
         model = fit_popularity(snapshot, interactions)
+        fitted_itemknn = itemknn_model or fit_itemknn(snapshot, interactions).to_serving()
         fitted_multivae = multivae_model or fit_multivae(snapshot, interactions, seed=random_seed)
+        fitted_known_user_fusion = known_user_fusion or untrained_fusion_classifier(
+            "known_user", source_snapshot_fingerprint=snapshot.fingerprint
+        )
+        fitted_history_only_fusion = history_only_fusion or untrained_fusion_classifier(
+            "history_only", source_snapshot_fingerprint=snapshot.fingerprint
+        )
         multivae_metadata = dict(fitted_multivae.training_metadata)
         # Preserve the #36 top-level field as the CPU artifact/runtime device.  The actual
         # neural training device is recorded precisely in multivae_training.actual_device.
@@ -454,6 +503,10 @@ class ServingArtifact:
             "multivae_enabled": True,
             "multivae": dict(fitted_multivae.configuration),
             "lightgcn_enabled": lightgcn_model is not None,
+            "itemknn_enabled": True,
+            "fusion_enabled": True,
+            "known_user_fusion": fitted_known_user_fusion.configuration,
+            "history_only_fusion": fitted_history_only_fusion.configuration,
             **dict(configuration or {}),
         }
         if lightgcn_model is not None:
@@ -503,6 +556,10 @@ class ServingArtifact:
             "lightgcn_training": (
                 dict(lightgcn_model.training_metadata) if lightgcn_model is not None else {}
             ),
+            "fusion_training": {
+                "known_user": dict(fitted_known_user_fusion.training_metadata),
+                "history_only": dict(fitted_history_only_fusion.training_metadata),
+            },
             "timings": resolved_timings,
             "evaluation_metrics": dict(evaluation_metrics or {}),
             "payload_inventory": [],
@@ -512,8 +569,11 @@ class ServingArtifact:
             path=path,
             manifest=manifest,
             model=model,
+            itemknn=fitted_itemknn,
             multivae=fitted_multivae,
             lightgcn=lightgcn_model,
+            known_user_fusion=fitted_known_user_fusion,
+            history_only_fusion=fitted_history_only_fusion,
         )
 
     def save(self) -> None:
@@ -526,12 +586,24 @@ class ServingArtifact:
         try:
             export_started = monotonic()
             payload: dict[str, object] = {
-                "payload_schema_version": 3 if self.lightgcn is not None else 2,
+                "payload_schema_version": 4,
                 "popularity": self.model.to_dict(),
+                "itemknn": self.itemknn.to_dict() if self.itemknn is not None else None,
                 "multivae": self.multivae.to_dict() if self.multivae is not None else None,
+                "fusion": {
+                    "known_user": (
+                        self.known_user_fusion.to_dict()
+                        if self.known_user_fusion is not None
+                        else None
+                    ),
+                    "history_only": (
+                        self.history_only_fusion.to_dict()
+                        if self.history_only_fusion is not None
+                        else None
+                    ),
+                },
             }
-            if self.lightgcn is not None:
-                payload["lightgcn"] = self.lightgcn.to_dict()
+            payload["lightgcn"] = self.lightgcn.to_dict() if self.lightgcn is not None else None
             model_payload = canonical_json_bytes(payload)
             model_sha256 = sha256_bytes(model_payload)
             manifest = {**self.manifest}
@@ -621,7 +693,7 @@ class ServingArtifact:
         try:
             payload_schema_version = model_value.get("payload_schema_version")
             if "payload_schema_version" in model_value:
-                if payload_schema_version not in {2, 3}:
+                if payload_schema_version not in {2, 3, 4}:
                     raise ValueError("unsupported composite payload schema")
                 raw_popularity = model_value.get("popularity")
                 raw_multivae = model_value.get("multivae")
@@ -630,16 +702,40 @@ class ServingArtifact:
                 model = PopularityRetriever.from_dict(raw_popularity)
                 multivae = MultVAERetriever.from_dict(raw_multivae)
                 raw_lightgcn = model_value.get("lightgcn")
-                if payload_schema_version == 3:
-                    if not isinstance(raw_lightgcn, Mapping):
+                if payload_schema_version in {3, 4}:
+                    if payload_schema_version == 4 and raw_lightgcn is None:
+                        lightgcn = None
+                    elif not isinstance(raw_lightgcn, Mapping):
                         raise ValueError("composite payload is missing LightGCN state")
-                    lightgcn = LightGCNRetriever.from_dict(raw_lightgcn)
+                    else:
+                        lightgcn = LightGCNRetriever.from_dict(raw_lightgcn)
                 else:
                     lightgcn = None
+                if payload_schema_version == 4:
+                    raw_itemknn = model_value.get("itemknn")
+                    raw_fusion = model_value.get("fusion")
+                    if not isinstance(raw_itemknn, Mapping) or not isinstance(raw_fusion, Mapping):
+                        raise ValueError("composite payload is missing ItemKNN or fusion state")
+                    raw_known_fusion = raw_fusion.get("known_user")
+                    raw_history_fusion = raw_fusion.get("history_only")
+                    if not isinstance(raw_known_fusion, Mapping) or not isinstance(
+                        raw_history_fusion, Mapping
+                    ):
+                        raise ValueError("composite payload is missing both fusion classifiers")
+                    itemknn = ItemKNNRetriever.from_dict(raw_itemknn)
+                    known_user_fusion = LearnedHybridFusion.from_dict(raw_known_fusion)
+                    history_only_fusion = LearnedHybridFusion.from_dict(raw_history_fusion)
+                else:
+                    itemknn = None
+                    known_user_fusion = None
+                    history_only_fusion = None
             else:
                 model = PopularityRetriever.from_dict(model_value)
+                itemknn = None
                 multivae = None
                 lightgcn = None
+                known_user_fusion = None
+                history_only_fusion = None
         except ValueError as error:
             raise ArtifactValidationError(
                 f"Serving Artifact model payload is invalid: {error}"
@@ -678,12 +774,44 @@ class ServingArtifact:
                 )
         if manifest.get("configuration", {}).get("lightgcn_enabled") and lightgcn is None:
             raise ArtifactValidationError("Serving Artifact is missing its LightGCN payload")
+        if manifest.get("configuration", {}).get("itemknn_enabled") and itemknn is None:
+            raise ArtifactValidationError("Serving Artifact is missing its ItemKNN payload")
+        if manifest.get("configuration", {}).get("fusion_enabled"):
+            if known_user_fusion is None or history_only_fusion is None:
+                raise ArtifactValidationError("Serving Artifact is missing its fusion classifiers")
+            manifest_known_configuration = manifest.get("configuration", {}).get(
+                "known_user_fusion"
+            )
+            manifest_history_configuration = manifest.get("configuration", {}).get(
+                "history_only_fusion"
+            )
+            if (
+                not isinstance(manifest_known_configuration, Mapping)
+                or dict(manifest_known_configuration) != known_user_fusion.configuration
+                or not isinstance(manifest_history_configuration, Mapping)
+                or dict(manifest_history_configuration) != history_only_fusion.configuration
+            ):
+                raise ArtifactValidationError(
+                    "Serving Artifact fusion configuration is incompatible"
+                )
+            raw_fusion_training = manifest.get("fusion_training")
+            if not isinstance(raw_fusion_training, Mapping):
+                raise ArtifactValidationError("Serving Artifact fusion provenance is missing")
+            if dict(raw_fusion_training.get("known_user", {})) != dict(
+                known_user_fusion.training_metadata
+            ) or dict(raw_fusion_training.get("history_only", {})) != dict(
+                history_only_fusion.training_metadata
+            ):
+                raise ArtifactValidationError("Serving Artifact fusion provenance is incompatible")
         return cls(
             path=path,
             manifest=manifest,
             model=model,
+            itemknn=itemknn,
             multivae=multivae,
             lightgcn=lightgcn,
+            known_user_fusion=known_user_fusion,
+            history_only_fusion=history_only_fusion,
         )
 
     def health_metadata(self) -> dict[str, object]:
@@ -697,6 +825,9 @@ class ServingArtifact:
             "serving_device": self.manifest["serving_device"],
             "multivae_loaded": self.multivae is not None,
             "lightgcn_loaded": self.lightgcn is not None,
+            "itemknn_loaded": self.itemknn is not None,
+            "known_user_fusion_loaded": self.known_user_fusion is not None,
+            "history_only_fusion_loaded": self.history_only_fusion is not None,
         }
 
 

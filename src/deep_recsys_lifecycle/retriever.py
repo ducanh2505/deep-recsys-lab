@@ -32,7 +32,7 @@ class SubjectAwareCandidateRetriever(Protocol):
 
 def candidate_pool_for_query(
     retriever: CandidateRetriever,
-    subject_id: int,
+    subject_id: int | None,
     history: Collection[int],
     limit: int = MAX_CANDIDATE_POOL,
 ) -> tuple[Candidate, ...]:
@@ -40,6 +40,8 @@ def candidate_pool_for_query(
 
     subject_method = getattr(retriever, "candidate_pool_for_subject", None)
     if subject_method is not None:
+        if subject_id is None:
+            raise ValueError("Subject-aware retriever cannot serve a query without identity")
         subject_aware = cast(SubjectAwareCandidateRetriever, retriever)
         return subject_aware.candidate_pool_for_subject(subject_id, history, limit=limit)
     return retriever.candidate_pool(history, limit=limit)

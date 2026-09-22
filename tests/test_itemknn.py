@@ -2,6 +2,7 @@ from deep_recsys_lifecycle.event_store import DataSnapshot
 from deep_recsys_lifecycle.itemknn import fit_itemknn
 from deep_recsys_lifecycle.models import RatingEvent
 from deep_recsys_lifecycle.positive import derive_positive_interactions
+from deep_recsys_lifecycle.serving import ItemKNNRetriever
 
 
 def _snapshot() -> DataSnapshot:
@@ -35,3 +36,22 @@ def test_itemknn_sums_similarity_over_query_history_and_excludes_observed_movies
 
     assert [candidate.movie_id for candidate in candidates] == [3, 4]
     assert candidates[0].score == 1.0
+
+
+def test_itemknn_cpu_serving_payload_round_trip_and_corruption_rejection() -> None:
+    snapshot = _snapshot()
+    model = fit_itemknn(snapshot, derive_positive_interactions(snapshot.events))
+
+    serving = model.to_serving()
+    loaded = ItemKNNRetriever.from_dict(serving.to_dict())
+
+    assert loaded.candidate_pool((1, 2), limit=3) == serving.candidate_pool((1, 2), limit=3)
+
+    payload = serving.to_dict()
+    payload["catalog"] = [1, 1]
+    try:
+        ItemKNNRetriever.from_dict(payload)
+    except ValueError as error:
+        assert "duplicate" in str(error)
+    else:
+        raise AssertionError("corrupt ItemKNN payload was accepted")

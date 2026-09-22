@@ -4,11 +4,15 @@ import math
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .event_store import DataSnapshot
 from .models import Candidate, PositiveInteraction
 from .positive import history_movie_ids
 from .retriever import MAX_CANDIDATE_POOL, validate_candidate_pool_limit
+
+if TYPE_CHECKING:
+    from .serving import ItemKNNRetriever
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +64,17 @@ class ItemKNNModel:
         if not 1 <= top_n <= 100:
             raise ValueError("top_n must be between 1 and 100")
         return self.candidate_pool(history, limit=top_n)
+
+    def to_serving(self) -> ItemKNNRetriever:
+        """Convert fitted evaluation state into the JSON-safe CPU serving state."""
+
+        from .serving import ItemKNNRetriever
+
+        return ItemKNNRetriever(
+            catalog=self.catalog,
+            item_subjects=self.item_subjects,
+            subject_histories=self.subject_histories,
+        )
 
 
 def fit_itemknn(

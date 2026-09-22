@@ -18,7 +18,7 @@ def test_known_user_route_returns_unseen_candidates(tmp_path: Path) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["query_mode"] == "known_user"
-    assert body["retriever"] == "popularity"
+    assert body["retriever"] == "lhf"
     assert {candidate["movie_id"] for candidate in body["candidates"]}.isdisjoint({10, 11})
 
 

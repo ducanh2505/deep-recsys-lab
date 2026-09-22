@@ -24,6 +24,7 @@ def write_static_report(
     *,
     temporal_split: TemporalSplit | None = None,
     evaluation: EvaluationReport | None = None,
+    history_only_evaluation: EvaluationReport | None = None,
 ) -> None:
     """Write a self-contained HTML report for the temporal evaluation stage."""
 
@@ -60,11 +61,18 @@ def write_static_report(
         "positive_interaction_count": positive_count,
         "query_examples": examples,
         "evaluation": evaluation.to_dict() if evaluation is not None else None,
+        "evaluations": {
+            "known_user": evaluation.to_dict() if evaluation is not None else None,
+            "history_only": (
+                history_only_evaluation.to_dict() if history_only_evaluation is not None else None
+            ),
+        },
         "multivae_resource_evidence": artifact.manifest.get("multivae_training", {}),
         "lightgcn_resource_evidence": artifact.manifest.get("lightgcn_training", {}),
+        "fusion_training": artifact.manifest.get("fusion_training", {}),
     }
     data_json = html.escape(json.dumps(embedded_data, indent=2, sort_keys=True))
-    evaluation_sections = _evaluation_sections(evaluation)
+    evaluation_sections = _evaluation_sections(evaluation, history_only_evaluation)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         "<!doctype html>\n"
@@ -76,8 +84,8 @@ def write_static_report(
         "padding:.45rem;text-align:left}th{background:#f4f4f4}</style></head>\n"
         "<body>\n"
         "<h1>Movie Recommender Lifecycle Showcase</h1>\n"
-        "<p>Leakage-free evaluation compares Popularity, ItemKNN, Mult-VAE, and LightGCN "
-        "Candidate Pools from one temporal lifecycle stage.</p>\n"
+        "<p>Leakage-free evaluation compares query-mode Learned Hybrid Fusion (LHF), "
+        "Popularity, ItemKNN, Mult-VAE, LightGCN, RRF, and the diagnostic Oracle Union.</p>\n"
         '<section id="data-snapshot"><h2>Data Snapshot 50%</h2>'
         f"<p>{snapshot.event_count} deduplicated Rating Events across "
         f"{snapshot.source_batch_count} append-only batches.</p>"
@@ -95,17 +103,19 @@ def write_static_report(
         f"{_multivae_resource_section(artifact)}"
         f"{_lightgcn_resource_section(artifact)}"
         '<section id="query-modes"><h2>Query modes</h2>'
-        "<p>Known-User, History-Only, and Empty-History routes all exclude supplied history "
-        "where applicable and return unseen Candidates. History-Only and Empty-History queries "
-        "do not support LightGCN. The public API remains on Popularity until Issue #39 adds "
-        "fusion.</p>"
+        "<p>Known-User and History-Only routes serve their separate LHF banks; Empty-History "
+        "uses Popularity. All routes exclude observed Movies and preserve artifact provenance. "
+        "History-Only and Empty-History queries do not support LightGCN.</p>"
         f"<pre>{data_json}</pre></section>\n"
         "</body>\n</html>\n",
         encoding="utf-8",
     )
 
 
-def _evaluation_sections(evaluation: EvaluationReport | None) -> str:
+def _evaluation_sections(
+    evaluation: EvaluationReport | None,
+    history_only_evaluation: EvaluationReport | None,
+) -> str:
     if evaluation is None:
         return (
             '<section id="popularity-metrics"><h2>Popularity metrics</h2>'
@@ -122,8 +132,23 @@ def _evaluation_sections(evaluation: EvaluationReport | None) -> str:
             "<p>Diagnostic coverage ceiling is not available.</p></section>\n"
         )
 
+    history_section = (
+        _mode_comparison(history_only_evaluation, "History-Only")
+        if history_only_evaluation is not None
+        else '<section id="history-only-comparison"><h2>History-Only comparison</h2>'
+        "<p>History-Only evaluation is not available.</p></section>\n"
+    )
+    known_section = _mode_comparison(evaluation, "Known-User")
     rows = ""
-    for name, retriever_evaluation in (*evaluation.retrievers.items(), ("RRF", evaluation.rrf)):
+    for name, retriever_evaluation in (
+        *evaluation.retrievers.items(),
+        ("best single", evaluation.best_single),
+        ("RRF", evaluation.rrf),
+        ("LHF", evaluation.lhf),
+        ("Oracle Union", evaluation.oracle_union),
+    ):
+        if retriever_evaluation is None:
+            continue
         metrics = retriever_evaluation.metrics
         display_name = {"multivae": "Mult-VAE", "lightgcn": "LightGCN"}.get(name, name)
         rows += (
@@ -154,13 +179,58 @@ def _evaluation_sections(evaluation: EvaluationReport | None) -> str:
         f"{_metrics_table(evaluation.retrievers.get('lightgcn'))}</section>\n"
         '<section id="rrf-metrics"><h2>RRF metrics</h2>'
         f"{_metrics_table(evaluation.rrf)}</section>\n"
+        '<section id="lhf-metrics"><h2>LHF metrics</h2>'
+        f"{_metrics_table(evaluation.lhf)}</section>\n"
         '<section id="oracle-union"><h2>Oracle Union</h2>'
         f"<p>Diagnostic-only unbudgeted union coverage: "
-        f"{evaluation.oracle_union_coverage:.4f}. It is not served.</p></section>\n"
+        f"{evaluation.oracle_union_coverage:.4f}. It is not served. "
+        f"Best single is selected from {html.escape(evaluation.best_single_source)}; "
+        f"realized Oracle headroom is {_headroom_text(evaluation)}.</p></section>\n"
         '<section id="final-ranking-quality"><h2>Final ranking quality</h2>'
         "<p>ConditionalRecall@10 and NDCG@10 describe ranking quality after retrieval coverage."
         "</p></section>\n"
+        f"{known_section}{history_section}"
     )
+
+
+def _mode_comparison(evaluation: EvaluationReport, label: str) -> str:
+    rows = ""
+    comparisons: list[tuple[str, RetrieverEvaluation | None]] = [
+        *evaluation.retrievers.items(),
+        ("best single", evaluation.best_single),
+        ("RRF", evaluation.rrf),
+        ("LHF", evaluation.lhf),
+        ("Oracle Union", evaluation.oracle_union),
+    ]
+    for name, retriever_evaluation in comparisons:
+        if retriever_evaluation is None:
+            continue
+        metrics = retriever_evaluation.metrics
+        rows += (
+            "<tr>"
+            f"<td>{html.escape(name)}</td>"
+            f"<td>{metrics.coverage_at_200:.4f}</td>"
+            f"<td>{metrics.conditional_recall_at_10:.4f}</td>"
+            f"<td>{metrics.end_to_end_recall_at_10:.4f}</td>"
+            f"<td>{metrics.ndcg_at_10:.4f}</td>"
+            "</tr>"
+        )
+    return (
+        f'<section id="{evaluation.query_mode.replace("_", "-")}-comparison">'
+        f"<h2>{html.escape(label)} comparison</h2>"
+        "<p>Best-single selection source: "
+        f"<code>{html.escape(evaluation.best_single_source)}</code>; "
+        f"Oracle headroom realized: {_headroom_text(evaluation)}.</p>"
+        "<table><thead><tr><th>System</th><th>Coverage@200</th>"
+        "<th>ConditionalRecall@10</th><th>EndToEndRecall@10</th><th>NDCG@10</th>"
+        f"</tr></thead><tbody>{rows}</tbody></table></section>\n"
+    )
+
+
+def _headroom_text(evaluation: EvaluationReport) -> str:
+    if evaluation.oracle_headroom_realized is None:
+        return "undefined (zero denominator)"
+    return f"{evaluation.oracle_headroom_realized:.4f}"
 
 
 def _metrics_table(evaluation: RetrieverEvaluation | None) -> str:

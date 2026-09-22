@@ -101,6 +101,121 @@ class PopularityRetriever:
 
 
 @dataclass(frozen=True, slots=True)
+class ItemKNNRetriever:
+    """Minimal CPU-only ItemKNN state exported for serving.
+
+    The runtime contains only the binary item-to-Subject incidence sets needed to reproduce
+    evaluation-time ItemKNN pools.  It never fits or reads the Event Store when loaded.
+    """
+
+    catalog: tuple[int, ...]
+    item_subjects: Mapping[int, frozenset[int]]
+    subject_histories: Mapping[int, tuple[int, ...]]
+
+    @property
+    def name(self) -> str:
+        return "itemknn"
+
+    def similarity(self, left_movie_id: int, right_movie_id: int) -> float:
+        left_subjects = self.item_subjects.get(left_movie_id, frozenset())
+        right_subjects = self.item_subjects.get(right_movie_id, frozenset())
+        if not left_subjects or not right_subjects:
+            return 0.0
+        return len(left_subjects & right_subjects) / math.sqrt(
+            len(left_subjects) * len(right_subjects)
+        )
+
+    def candidate_pool(
+        self,
+        history: Collection[int],
+        limit: int = MAX_CANDIDATE_POOL,
+    ) -> tuple[Candidate, ...]:
+        validate_candidate_pool_limit(limit)
+        excluded = set(history)
+        scored = (
+            (
+                movie_id,
+                sum(
+                    self.similarity(movie_id, history_movie_id)
+                    for history_movie_id in dict.fromkeys(history)
+                ),
+            )
+            for movie_id in self.catalog
+            if movie_id not in excluded
+        )
+        ordered = sorted(scored, key=lambda item: (-item[1], item[0]))[:limit]
+        return tuple(
+            Candidate(movie_id=movie_id, score=score, rank=rank)
+            for rank, (movie_id, score) in enumerate(ordered, start=1)
+        )
+
+    def recommend(self, history: Collection[int], top_n: int) -> tuple[Candidate, ...]:
+        if not 1 <= top_n <= 100:
+            raise ValueError("top_n must be between 1 and 100")
+        return self.candidate_pool(history, limit=top_n)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "payload_schema_version": 1,
+            "retriever": "itemknn",
+            "catalog": list(self.catalog),
+            "item_subjects": {
+                str(movie_id): sorted(subject_ids)
+                for movie_id, subject_ids in self.item_subjects.items()
+            },
+            "subject_histories": {
+                str(subject_id): list(movie_ids)
+                for subject_id, movie_ids in self.subject_histories.items()
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> ItemKNNRetriever:
+        if value.get("payload_schema_version") != 1 or value.get("retriever") != "itemknn":
+            raise ValueError("ItemKNN payload has an unsupported schema or retriever")
+        raw_catalog = value.get("catalog")
+        raw_item_subjects = value.get("item_subjects")
+        raw_histories = value.get("subject_histories")
+        if (
+            not isinstance(raw_catalog, list)
+            or not isinstance(raw_item_subjects, Mapping)
+            or not isinstance(raw_histories, Mapping)
+        ):
+            raise ValueError("ItemKNN payload is missing catalog, incidence, or history mappings")
+        catalog = tuple(_strict_int(item, "ItemKNN catalog movie id") for item in raw_catalog)
+        if len(set(catalog)) != len(catalog):
+            raise ValueError("ItemKNN payload catalog contains duplicate Movies")
+        catalog_ids = set(catalog)
+        item_subjects: dict[int, frozenset[int]] = {}
+        for movie_id, raw_subject_ids in raw_item_subjects.items():
+            if not isinstance(movie_id, str) or not isinstance(raw_subject_ids, list):
+                raise ValueError("ItemKNN payload has an invalid item incidence set")
+            parsed_movie_id = _parse_int(movie_id, "ItemKNN incidence movie id")
+            if parsed_movie_id not in catalog_ids:
+                raise ValueError("ItemKNN incidence contains an unknown Movie")
+            subjects = tuple(
+                _strict_int(item, "ItemKNN incidence Subject id") for item in raw_subject_ids
+            )
+            if len(set(subjects)) != len(subjects):
+                raise ValueError("ItemKNN incidence contains duplicate Subjects")
+            item_subjects[parsed_movie_id] = frozenset(subjects)
+
+        subject_histories: dict[int, tuple[int, ...]] = {}
+        for subject_id, raw_history in raw_histories.items():
+            if not isinstance(subject_id, str) or not isinstance(raw_history, list):
+                raise ValueError("ItemKNN payload has an invalid Subject history")
+            history = tuple(_strict_int(item, "ItemKNN history Movie id") for item in raw_history)
+            if len(set(history)) != len(history) or not set(history) <= catalog_ids:
+                raise ValueError("ItemKNN Subject history is not a deduplicated catalog profile")
+            subject_histories[_parse_int(subject_id, "ItemKNN history Subject id")] = history
+        return cls(
+            catalog=catalog,
+            item_subjects=item_subjects,
+            subject_histories=subject_histories,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class MultVAERetriever:
     """CPU inference state for a snapshot-fitted Mult-VAE Candidate Retriever.
 

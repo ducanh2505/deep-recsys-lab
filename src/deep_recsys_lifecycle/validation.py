@@ -31,7 +31,14 @@ def validate_smoke_queries(artifact: ServingArtifact) -> None:
         second = service.recommend(query).to_dict()
         if first != second:
             raise SmokeValidationError(f"smoke query is not deterministic: {query.mode}")
-        _validate_response(artifact, first, query.mode, observed)
+        expected_retriever = "popularity" if query.mode == "empty_history" else "lhf"
+        _validate_response(
+            artifact,
+            first,
+            query.mode,
+            observed,
+            expected_retriever=expected_retriever,
+        )
 
     if artifact.manifest.get("configuration", {}).get("multivae_enabled"):
         if artifact.multivae is None:
@@ -48,6 +55,28 @@ def validate_smoke_queries(artifact: ServingArtifact) -> None:
                     f"Mult-VAE smoke query is not deterministic: {query.mode}"
                 )
             _validate_response(artifact, first, query.mode, observed, expected_retriever="multivae")
+
+    if artifact.manifest.get("configuration", {}).get("itemknn_enabled"):
+        if artifact.itemknn is None:
+            raise SmokeValidationError("artifact is missing the ItemKNN payload")
+        itemknn_examples: tuple[tuple[Query, Collection[int]], ...] = (
+            _known_user_example(artifact),
+            _history_only_example(artifact),
+        )
+        for query, observed in itemknn_examples:
+            first = service.recommend_with_retriever(query, "itemknn").to_dict()
+            second = service.recommend_with_retriever(query, "itemknn").to_dict()
+            if first != second:
+                raise SmokeValidationError(
+                    f"ItemKNN smoke query is not deterministic: {query.mode}"
+                )
+            _validate_response(
+                artifact,
+                first,
+                query.mode,
+                observed,
+                expected_retriever="itemknn",
+            )
 
     if artifact.manifest.get("configuration", {}).get("lightgcn_enabled"):
         if artifact.lightgcn is None:

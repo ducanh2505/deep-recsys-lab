@@ -2,14 +2,15 @@
 
 A local-first portfolio project that demonstrates a time-respecting evaluation stage for an
 implicit-feedback movie recommender: Kafka ingestion, a 50% Data Snapshot, a withheld 50–60%
-Future Window, Popularity, sparse ItemKNN, Mult-VAE, and LightGCN Candidate Pools, immutable
-Serving Artifacts, FastAPI recommendations, and a static HTML report.
+Future Window, Popularity, sparse ItemKNN, Mult-VAE, LightGCN Candidate Pools, query-mode
+Learned Hybrid Fusion, immutable Serving Artifacts, FastAPI recommendations, and a static HTML
+report.
 
 This orphan branch is intentionally independent from the repository's `main` history. Ticket
 #34 implements the ingestion and Popularity tracer bullet; #35 adds the leakage-free
-evaluation stage; #36 adds immutable activation; #37 adds the Mult-VAE vertical slice; and #38
-adds the LightGCN vertical slice. Learned fusion, rolling snapshots, and latency benchmarking
-remain out of scope here.
+evaluation stage; #36 adds immutable activation; #37 adds the Mult-VAE vertical slice; #38
+adds the LightGCN vertical slice; and #39 adds query-mode Learned Hybrid Fusion. Rolling
+snapshots and latency benchmarking remain out of scope here.
 
 ## Documents
 
@@ -21,6 +22,7 @@ remain out of scope here.
 - [Tracking issue #36](https://github.com/ducanh2505/deep-recsys-lab/issues/36)
 - [Tracking issue #37](https://github.com/ducanh2505/deep-recsys-lab/issues/37)
 - [Tracking issue #38](https://github.com/ducanh2505/deep-recsys-lab/issues/38)
+- [Tracking issue #39](https://github.com/ducanh2505/deep-recsys-lab/issues/39)
 
 ## Scope at a glance
 
@@ -37,11 +39,15 @@ remain out of scope here.
   persisted Subject embeddings for Known-User Queries only, and records measured MPS/CPU
   device evidence with an explicit fallback reason.
 - RRF is reported as a heuristic baseline and Oracle Union is reported only as a coverage ceiling.
-- FastAPI exposes Known-User, History-Only, and Empty-History recommendation routes with
-  history exclusion.
+- LHF trains separate LightGBM binary classifiers for Known-User and History-Only queries from
+  an inner validation window wholly inside the 50% Data Snapshot. Training and serving share a
+  versioned feature schema; missing evidence is presence=0, rank=0, score=0.0.
+- FastAPI serves LHF for Known-User and History-Only requests and Popularity for Empty-History,
+  with observed-Movie exclusion. The immutable artifact carries a minimal CPU ItemKNN payload;
+  loading never fits ItemKNN or reads the Event Store.
 - A self-contained HTML report separates the 50% Data Snapshot, 50–60% Future Window, retrieval
-  coverage, final ranking quality, Popularity, ItemKNN, Mult-VAE, LightGCN, RRF, Oracle Union,
-  and neural resource diagnostics.
+  coverage, final ranking quality, Popularity, ItemKNN, Mult-VAE, LightGCN, RRF, LHF, Oracle
+  Union, realized headroom, and neural resource diagnostics by query mode.
 
 Downloaded MovieLens data and generated artifacts are never committed.
 
@@ -60,14 +66,16 @@ The command creates an artifact store at `artifacts/fast/`, containing an immuta
 `future_window.json`. It intentionally publishes the fixture twice to exercise at-least-once
 replay; the full materialized snapshot remains unchanged by the duplicate batch. Fitting uses
 only the first 50% of chronologically ordered events. The next 10% supplies Gold Candidates and
-metrics, never model state or features.
+metrics, never model state, fusion labels, or features. The fast stage uses a prefix and an
+inner-validation suffix inside the 50% snapshot for LHF supervision, then refits base retrievers
+on the complete snapshot before evaluating the Future Window. A fixture without both label
+classes is recorded as `untrained fallback`, never as a learned model.
 
-The report compares Top-200 Popularity, ItemKNN, Mult-VAE, and LightGCN pools on the same
-deterministic Known-User cohort with `Coverage@200`, `ConditionalRecall@10`,
-`EndToEndRecall@10`, `NDCG@10`, RRF, and diagnostic Oracle Union coverage. LightGCN is not
-available for History-Only or Empty-History Queries. The public API still returns Popularity
-until Learned Hybrid Fusion is implemented; the loaded neural payloads are exercised through
-their serving smoke seams.
+The report compares Top-200 Popularity, ItemKNN, Mult-VAE, and LightGCN pools plus LHF on
+Known-User and History-Only cohorts with `Coverage@200`, `ConditionalRecall@10`,
+`EndToEndRecall@10`, `NDCG@10`, RRF, the validation-selected best single retriever, diagnostic
+Oracle Union coverage, and realized Oracle headroom. LightGCN is available only for Known-User;
+Empty-History uses Popularity without fusion.
 
 To serve the loadable artifact:
 
@@ -80,9 +88,9 @@ curl -s -X POST http://127.0.0.1:8000/recommendations \
 `serve` accepts either an artifact store (which follows `active.json`) or one explicit immutable
 artifact directory. The API loads persisted runtime payloads only; it does not fit a model,
 replay Kafka, or read the Event Store. Restarting the API with the same store therefore keeps
-the artifact identity and recommendation responses stable. The public recommendation route is
-still Popularity until #39 adds query-mode-aware fusion; LightGCN can be exercised through the
-loaded serving retriever seam and is not presented as a public API response.
+the artifact identity and recommendation responses stable. Known-User and History-Only routes
+return LHF order; Empty-History returns Popularity. Responses retain artifact/snapshot
+provenance and the explicit fusion training status.
 
 Run the deterministic tests without Docker:
 
@@ -93,4 +101,6 @@ uv run --group dev pytest
 The real Kafka integration test is skipped unless the Compose broker is reachable. Start it
 explicitly with `docker compose up -d kafka` when you want to run that test against the real
 boundary. Mult-VAE and LightGCN training do not require Docker or an MPS device; unavailable,
-incompatible, or slower MPS paths are recorded and retried on CPU.
+incompatible, or slower MPS paths are recorded and retried on CPU. The fast lifecycle selects
+CPU explicitly on hosts where the native MPS benchmark is unstable; the individual vertical
+slice functions retain their MPS probe/fallback seams.

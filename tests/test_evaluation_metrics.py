@@ -4,6 +4,7 @@ from deep_recsys_lifecycle.evaluation import (
     EvaluationCohort,
     EvaluationQuery,
     compute_metrics,
+    evaluate_retrievers,
     oracle_union,
     oracle_union_coverage,
     rrf_fuse,
@@ -93,3 +94,80 @@ def test_rrf_and_oracle_union_use_one_based_ranks_and_deterministic_ties() -> No
         }
     )
     assert [candidate.movie_id for candidate in tied] == [7, 8]
+
+
+def test_query_mode_report_uses_validation_best_single_and_realizes_oracle_headroom() -> None:
+    class Probe:
+        def __init__(self, name: str, pools: dict[int, tuple[Candidate, ...]]) -> None:
+            self.name = name
+            self._pools = pools
+
+        def candidate_pool(self, _history: tuple[int, ...], limit: int = 200):
+            return self._pools[1][:limit]
+
+        def candidate_pool_for_subject(
+            self, subject_id: int, _history: tuple[int, ...], limit: int = 200
+        ):
+            return self._pools[subject_id][:limit]
+
+    cohort = EvaluationCohort(
+        queries=(
+            EvaluationQuery(subject_id=1, history=(), gold_movie_id=1),
+            EvaluationQuery(subject_id=2, history=(), gold_movie_id=4),
+        )
+    )
+    popularity = Probe(
+        "popularity",
+        {
+            1: (Candidate(movie_id=1, score=1, rank=1),),
+            2: (Candidate(movie_id=2, score=1, rank=1),),
+        },
+    )
+    itemknn = Probe(
+        "itemknn",
+        {
+            1: (Candidate(movie_id=3, score=1, rank=1),),
+            2: (Candidate(movie_id=4, score=1, rank=1),),
+        },
+    )
+
+    report = evaluate_retrievers(
+        {"popularity": popularity, "itemknn": itemknn},
+        cohort,
+        selected_best_single_name="popularity",
+        best_single_source="inner_validation",
+        lhf_pools={
+            1: (Candidate(movie_id=1, score=0.9, rank=1),),
+            2: (Candidate(movie_id=4, score=0.9, rank=1),),
+        },
+    )
+
+    assert report.best_single_name == "popularity"
+    assert report.best_single_source == "inner_validation"
+    assert report.best_single.metrics.coverage_at_200 == 0.5
+    assert report.rrf.metrics.coverage_at_200 == 1.0
+    assert report.lhf is not None
+    assert report.lhf.metrics.coverage_at_200 == 1.0
+    assert report.oracle_union_coverage == 1.0
+    assert report.oracle_headroom_denominator == 0.5
+    assert report.oracle_headroom_realized == 1.0
+
+
+def test_oracle_headroom_explicitly_marks_zero_denominator_undefined() -> None:
+    class Probe:
+        name = "popularity"
+
+        def candidate_pool(self, _history: tuple[int, ...], limit: int = 200):
+            return (Candidate(movie_id=1, score=1, rank=1),)[:limit]
+
+    cohort = EvaluationCohort(queries=(EvaluationQuery(subject_id=1, history=(), gold_movie_id=1),))
+    report = evaluate_retrievers(
+        {"popularity": Probe()},
+        cohort,
+        selected_best_single_name="popularity",
+        lhf_pools={1: (Candidate(movie_id=1, score=1, rank=1),)},
+    )
+
+    assert report.oracle_headroom_denominator == 0.0
+    assert report.oracle_headroom_realized is None
+    assert report.to_dict()["oracle_headroom"]["undefined_reason"] == ("zero headroom denominator")

@@ -16,24 +16,45 @@ from .retriever import (
     validate_candidate_pool_limit,
 )
 
+EvaluationQueryMode = Literal["known_user", "history_only"]
+
 
 @dataclass(frozen=True, slots=True)
 class EvaluationQuery:
     """One snapshot-history query and its first Future Window Gold Candidate."""
 
-    subject_id: int
+    subject_id: int | None
     history: tuple[int, ...]
     gold_movie_id: int
     gold_event_id: str | None = None
-    query_mode: Literal["known_user", "history_only", "empty_history"] = "known_user"
+    query_mode: EvaluationQueryMode = "known_user"
+    query_id: str | None = None
 
     def __post_init__(self) -> None:
-        if self.query_mode != "known_user":
-            raise ValueError("evaluation LightGCN cohorts support Known-User queries only")
+        if self.query_mode == "known_user" and self.subject_id is None:
+            raise ValueError("Known-User evaluation queries require a Subject identity")
+        if self.query_mode == "history_only":
+            if self.subject_id is not None:
+                raise ValueError(
+                    "History-Only evaluation queries must not carry Subject identity; "
+                    "Known-User queries are the identity-bearing mode"
+                )
+            if not self.query_id:
+                raise ValueError("History-Only evaluation queries require a query_id")
 
     @property
-    def mode(self) -> Literal["known_user"]:
-        return "known_user"
+    def mode(self) -> EvaluationQueryMode:
+        return self.query_mode
+
+    @property
+    def pool_key(self) -> int | str:
+        if self.query_mode == "known_user":
+            if self.subject_id is None:  # pragma: no cover - guarded by __post_init__
+                raise ValueError("Known-User query has no Subject identity")
+            return self.subject_id
+        if self.query_id is None:  # pragma: no cover - guarded by __post_init__
+            raise ValueError("History-Only query has no query identity")
+        return self.query_id
 
     @property
     def gold_candidate(self) -> int:
@@ -80,7 +101,7 @@ class EvaluationMetrics:
 @dataclass(frozen=True, slots=True)
 class RetrieverEvaluation:
     name: str
-    pools: Mapping[int, tuple[Candidate, ...]]
+    pools: Mapping[int | str, tuple[Candidate, ...]]
     metrics: EvaluationMetrics
 
     def to_dict(self) -> dict[str, object]:
@@ -100,13 +121,23 @@ class EvaluationReport:
     retrievers: Mapping[str, RetrieverEvaluation]
     rrf: RetrieverEvaluation
     oracle_union_coverage: float
+    query_mode: EvaluationQueryMode = "known_user"
+    best_single: RetrieverEvaluation | None = None
+    best_single_name: str | None = None
+    best_single_source: str = "cohort"
+    lhf: RetrieverEvaluation | None = None
+    oracle_union: RetrieverEvaluation | None = None
+    oracle_headroom_denominator: float = 0.0
+    oracle_headroom_realized: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "cohort_size": self.cohort.size,
+            "query_mode": self.query_mode,
             "queries": [
                 {
                     "subject_id": query.subject_id,
+                    "query_id": query.query_id,
                     "history": list(query.history),
                     "gold_movie_id": query.gold_movie_id,
                     "gold_event_id": query.gold_event_id,
@@ -118,9 +149,23 @@ class EvaluationReport:
                 name: evaluation.to_dict() for name, evaluation in self.retrievers.items()
             },
             "rrf": self.rrf.to_dict(),
+            "best_single": self.best_single.to_dict() if self.best_single is not None else None,
+            "best_single_name": self.best_single_name,
+            "best_single_source": self.best_single_source,
+            "lhf": self.lhf.to_dict() if self.lhf is not None else None,
             "oracle_union": {
                 "coverage_at_200": self.oracle_union_coverage,
                 "diagnostic_only": True,
+                "metrics": self.oracle_union.metrics.to_dict()
+                if self.oracle_union is not None
+                else None,
+            },
+            "oracle_headroom": {
+                "denominator": self.oracle_headroom_denominator,
+                "realized": self.oracle_headroom_realized,
+                "undefined_reason": (
+                    "zero headroom denominator" if self.oracle_headroom_realized is None else None
+                ),
             },
         }
 
@@ -130,6 +175,7 @@ def build_evaluation_cohort(
     future_window: Iterable[RatingEvent],
     *,
     threshold: float = 4.0,
+    query_mode: EvaluationQueryMode = "known_user",
 ) -> EvaluationCohort:
     """Build one deterministic Subject cohort without adding future events to history."""
 
@@ -150,16 +196,20 @@ def build_evaluation_cohort(
     for interaction in future_interactions:
         first_future_positive.setdefault(interaction.subject_id, interaction)
 
+    if query_mode not in {"known_user", "history_only"}:
+        raise ValueError("evaluation query mode must be Known-User or History-Only")
     queries: list[EvaluationQuery] = []
     for subject_id in sorted(set(histories) & set(first_future_positive)):
         history = history_movie_ids(histories[subject_id])
         gold = first_future_positive[subject_id]
         queries.append(
             EvaluationQuery(
-                subject_id=subject_id,
+                subject_id=subject_id if query_mode == "known_user" else None,
                 history=history,
                 gold_movie_id=gold.movie_id,
                 gold_event_id=gold.event_id,
+                query_mode=query_mode,
+                query_id=(f"history-{len(queries)}" if query_mode == "history_only" else None),
             )
         )
     return EvaluationCohort(queries=tuple(queries))
@@ -167,7 +217,7 @@ def build_evaluation_cohort(
 
 def compute_metrics(
     cohort: EvaluationCohort,
-    pools: Mapping[int, Sequence[Candidate]],
+    pools: Mapping[int | str, Sequence[Candidate]],
     *,
     pool_limit: int = MAX_CANDIDATE_POOL,
     ranking_cutoff: int = 10,
@@ -182,7 +232,7 @@ def compute_metrics(
     ranking_success = 0
     discounted_gain = 0.0
     for query in cohort.queries:
-        pool = _unobserved_pool(pools.get(query.subject_id, ()), query.history, pool_limit)
+        pool = _unobserved_pool(pools.get(query.pool_key, ()), query.history, pool_limit)
         ranks: dict[int, int] = {}
         for rank, candidate in enumerate(pool, start=1):
             ranks.setdefault(candidate.movie_id, rank)
@@ -250,11 +300,11 @@ def oracle_union(
 
 def oracle_union_coverage(
     cohort: EvaluationCohort,
-    pools: Mapping[int, Mapping[str, Sequence[Candidate]] | Sequence[Candidate]],
+    pools: Mapping[int | str, Mapping[str, Sequence[Candidate]] | Sequence[Candidate]],
 ) -> float:
     covered = 0
     for query in cohort.queries:
-        query_pools = pools.get(query.subject_id, {})
+        query_pools = pools.get(query.pool_key, {})
         if isinstance(query_pools, Mapping):
             union_movie_ids = {
                 candidate.movie_id
@@ -277,16 +327,22 @@ def evaluate_retrievers(
     *,
     pool_limit: int = MAX_CANDIDATE_POOL,
     ranking_cutoff: int = 10,
+    selected_best_single_name: str | None = None,
+    best_single_source: str = "cohort",
+    lhf_pools: Mapping[int | str, Sequence[Candidate]] | None = None,
 ) -> EvaluationReport:
-    """Evaluate every retriever, RRF, and Oracle Union over the same cohort."""
+    """Evaluate one query-mode retriever bank and its fusion diagnostics."""
 
     validate_candidate_pool_limit(pool_limit)
-    if any(query.mode != "known_user" for query in cohort.queries):
-        raise ValueError("LightGCN evaluation and fusion require Known-User queries")
-    retriever_pools: dict[str, dict[int, tuple[Candidate, ...]]] = {}
+    query_mode: EvaluationQueryMode = cohort.queries[0].mode if cohort.queries else "known_user"
+    if any(query.mode != query_mode for query in cohort.queries):
+        raise ValueError("an evaluation cohort cannot mix query modes")
+    if query_mode == "history_only" and "lightgcn" in retrievers:
+        raise ValueError("History-Only evaluation cannot use LightGCN")
+    retriever_pools: dict[str, dict[int | str, tuple[Candidate, ...]]] = {}
     for name, retriever in retrievers.items():
         retriever_pools[name] = {
-            query.subject_id: _unobserved_pool(
+            query.pool_key: _unobserved_pool(
                 candidate_pool_for_query(
                     retriever,
                     query.subject_id,
@@ -309,12 +365,12 @@ def evaluate_retrievers(
         )
         for name, pools in retriever_pools.items()
     }
-    rrf_pools: dict[int, tuple[Candidate, ...]] = {}
-    union_inputs: dict[int, dict[str, tuple[Candidate, ...]]] = {}
+    rrf_pools: dict[int | str, tuple[Candidate, ...]] = {}
+    oracle_pools: dict[int | str, tuple[Candidate, ...]] = {}
     for query in cohort.queries:
-        query_pools = {name: pools[query.subject_id] for name, pools in retriever_pools.items()}
-        union_inputs[query.subject_id] = query_pools
-        rrf_pools[query.subject_id] = rrf_fuse(query_pools, top_n=pool_limit)
+        query_pools = {name: pools[query.pool_key] for name, pools in retriever_pools.items()}
+        rrf_pools[query.pool_key] = rrf_fuse(query_pools, top_n=pool_limit)
+        oracle_pools[query.pool_key] = oracle_union(query_pools)
     rrf_evaluation = RetrieverEvaluation(
         name="rrf",
         pools=rrf_pools,
@@ -322,11 +378,108 @@ def evaluate_retrievers(
             cohort, rrf_pools, pool_limit=pool_limit, ranking_cutoff=ranking_cutoff
         ),
     )
+    oracle_evaluation = RetrieverEvaluation(
+        name="oracle_union",
+        pools=oracle_pools,
+        metrics=_compute_unbounded_metrics(cohort, oracle_pools, ranking_cutoff),
+    )
+    if selected_best_single_name is None:
+        selected_best_single_name = _select_best_single_name(evaluations)
+        resolved_source = best_single_source
+    else:
+        if selected_best_single_name not in evaluations:
+            raise ValueError("selected best single retriever is not in the evaluation bank")
+        resolved_source = best_single_source
+    best_single = evaluations[selected_best_single_name]
+    lhf_evaluation = (
+        RetrieverEvaluation(
+            name="lhf",
+            pools={key: tuple(values) for key, values in lhf_pools.items()},
+            metrics=compute_metrics(
+                cohort, lhf_pools, pool_limit=pool_limit, ranking_cutoff=ranking_cutoff
+            ),
+        )
+        if lhf_pools is not None
+        else None
+    )
+    headroom_denominator = max(
+        oracle_evaluation.metrics.coverage_at_200 - best_single.metrics.coverage_at_200,
+        0.0,
+    )
+    headroom_realized = (
+        None
+        if lhf_evaluation is None or headroom_denominator == 0.0
+        else (lhf_evaluation.metrics.coverage_at_200 - best_single.metrics.coverage_at_200)
+        / headroom_denominator
+    )
     return EvaluationReport(
         cohort=cohort,
         retrievers=evaluations,
         rrf=rrf_evaluation,
-        oracle_union_coverage=oracle_union_coverage(cohort, union_inputs),
+        oracle_union_coverage=oracle_evaluation.metrics.coverage_at_200,
+        query_mode=query_mode,
+        best_single=best_single,
+        best_single_name=selected_best_single_name,
+        best_single_source=resolved_source,
+        lhf=lhf_evaluation,
+        oracle_union=oracle_evaluation,
+        oracle_headroom_denominator=headroom_denominator,
+        oracle_headroom_realized=headroom_realized,
+    )
+
+
+def _select_best_single_name(evaluations: Mapping[str, RetrieverEvaluation]) -> str:
+    if not evaluations:
+        raise ValueError("cannot select a best single retriever from an empty bank")
+    return max(
+        evaluations,
+        key=lambda name: (
+            evaluations[name].metrics.coverage_at_200,
+            evaluations[name].metrics.end_to_end_recall_at_10,
+            evaluations[name].metrics.ndcg_at_10,
+            # Mapping insertion order is the declared bank order; earlier wins exact ties.
+            -tuple(evaluations).index(name),
+        ),
+    )
+
+
+def _compute_unbounded_metrics(
+    cohort: EvaluationCohort,
+    pools: Mapping[int | str, Sequence[Candidate]],
+    ranking_cutoff: int,
+) -> EvaluationMetrics:
+    covered = 0
+    ranking_success = 0
+    discounted_gain = 0.0
+    for query in cohort.queries:
+        query_pool = pools.get(query.pool_key, ())
+        pool = _unobserved_pool(
+            query_pool,
+            query.history,
+            limit=max(len(query_pool), 1),
+        )
+        gold_rank = next(
+            (
+                rank
+                for rank, candidate in enumerate(pool, start=1)
+                if candidate.movie_id == query.gold_movie_id
+            ),
+            None,
+        )
+        if gold_rank is not None:
+            covered += 1
+            if gold_rank <= ranking_cutoff:
+                ranking_success += 1
+                discounted_gain += 1.0 / math.log2(gold_rank + 1)
+    query_count = cohort.size
+    return EvaluationMetrics(
+        query_count=query_count,
+        covered_query_count=covered,
+        ranking_success_count=ranking_success,
+        coverage_at_200=covered / query_count if query_count else 0.0,
+        conditional_recall_at_10=ranking_success / covered if covered else 0.0,
+        end_to_end_recall_at_10=ranking_success / query_count if query_count else 0.0,
+        ndcg_at_10=discounted_gain / query_count if query_count else 0.0,
     )
 
 

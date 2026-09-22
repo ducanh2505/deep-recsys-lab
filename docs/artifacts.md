@@ -7,7 +7,7 @@ runtime. The local store is deliberately small:
 artifacts/fast/
 ├── <immutable-artifact-id>/
 │   ├── manifest.json
-│   └── model.json                 # Popularity + Mult-VAE + LightGCN runtime payloads
+│   └── model.json                 # CPU retrievers + query-mode LHF runtime payloads
 └── active.json
 ```
 
@@ -31,12 +31,15 @@ causes runtime loading to fail closed; there is no fallback to another artifact.
 
 The manifest records the schema/version, artifact identity, `fast` lifecycle stage and 50% data
 cutoff, source and positive-interaction counts, implicit threshold, canonical dataset checksum,
-snapshot fingerprint, Popularity API query modes, configuration and configuration checksum, seed,
+snapshot fingerprint, query modes, configuration and configuration checksum, seed,
 the CPU serving device, non-negative timings, evaluation metrics, source revision, payload
 inventory, payload SHA-256 checksums, bundle integrity checksum, and manifest checksum. The
 `multivae_training` and `lightgcn_training` provenance objects separately record requested and
 actual neural devices, training duration, seed, fixed hyperparameters, benchmark evidence where
-applicable, and fallback reasons. LightGCN's actual device is never rewritten to `mps` after a
+applicable, and fallback reasons. `fusion_training.known_user` and `.history_only` record the
+inner-validation snapshot fingerprint, validation event IDs, row counts, fixed LightGBM
+parameters, CPU training status, and an explicit `untrained fallback` reason when a valid
+two-class fixture is unavailable. LightGCN's actual device is never rewritten to `mps` after a
 CPU fallback.
 
 The top-level `training_device` field remains the CPU artifact/runtime field retained from Issue
@@ -48,15 +51,18 @@ Dataset and configuration checksums use canonical UTF-8 JSON with sorted keys an
 separators. Dataset events are sorted by their canonical representation, so the checksum does
 not depend on an absolute input path, event order, or dictionary insertion order.
 
-The runtime loader accepts only a complete, compatible artifact. `model.json` is a checksummed
-composite payload containing the Popularity state, Mult-VAE weights, and LightGCN Subject/Movie
-mappings and CPU-serving embeddings, plus deduplicated Subject histories and inference
-configuration. It rejects missing or malformed fields, unsupported versions, invalid
-configuration, partial bundles, absolute or traversing payload paths, missing payloads,
-corrupted payloads, inconsistent weight shapes, and checksum mismatches. The runtime uses CPU
-inference for both neural retrievers; LightGCN requires a persisted Known-User Subject embedding
-and cannot infer one from supplied history. It does not fit a model, read Kafka, or read the
-Event Store.
+The runtime loader accepts only a complete, compatible artifact. `model.json` payload schema 4
+contains the Popularity state, minimal CPU ItemKNN incidence state, Mult-VAE weights, LightGCN
+Subject/Movie mappings and CPU-serving embeddings, and separate Known-User/History-Only LHF
+classifiers. Each LHF payload includes its exact query-mode retriever bank, feature
+schema/version/order, missing-evidence representation, training metadata, and a CPU-loadable
+LightGBM model string (or an explicit `untrained fallback` with no model). It rejects missing or
+malformed fields, unsupported versions, invalid configuration, partial bundles, absolute or
+traversing payload paths, missing payloads, corrupted payloads, inconsistent weight shapes,
+incompatible feature banks, and checksum mismatches. The runtime uses CPU inference for every
+retriever and fusion classifier; LightGCN requires a persisted Known-User Subject embedding and
+cannot infer one from supplied history. It does not fit a model, fit ItemKNN, read Kafka, or read
+the Event Store.
 
 ## Commands and deliberate limits
 
@@ -67,9 +73,11 @@ uv run movie-recsys fast --output artifacts/fast
 uv run movie-recsys serve --artifact artifacts/fast
 ```
 
-The fast profile exports loadable Mult-VAE and LightGCN payloads and evaluates them beside
-Popularity and ItemKNN. The final API response remains Popularity until Issue #39 adds Learned
-Hybrid Fusion; Mult-VAE is smoke-tested for Known-User and History-Only serving, while LightGCN
-is smoke-tested only for Known-User serving. History-Only and Empty-History never receive
-LightGCN Candidates. This issue does not add a distributed registry, multi-host locking, object
-storage, retention/garbage collection, continuous rollback, or learned fusion.
+The fast profile exports loadable Mult-VAE, LightGCN, ItemKNN, and both LHF payloads and evaluates
+Known-User and History-Only modes beside Popularity, RRF, and Oracle Union. Known-User and
+History-Only API responses use their LHF order; Empty-History remains Popularity. Mult-VAE and
+ItemKNN are smoke-tested for Known-User and History-Only serving, while LightGCN is smoke-tested
+only for Known-User serving. History-Only and Empty-History never receive LightGCN Candidates.
+This issue does not add a distributed registry, multi-host locking, object storage,
+retention/garbage collection, rolling stages, latency benchmarking, an LLM reranker, or a
+downstream ranker.
