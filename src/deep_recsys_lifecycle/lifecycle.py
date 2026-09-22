@@ -15,9 +15,11 @@ from .fixture import load_movielens_fixture
 from .itemknn import fit_itemknn
 from .kafka import KafkaBoundary
 from .models import RatingEvent
+from .multivae import fit_multivae
 from .popularity import fit_popularity
 from .positive import derive_positive_interactions
 from .report import write_static_report
+from .serving import MultVAERetriever
 from .temporal import TemporalSplit, split_temporal_events
 from .validation import validate_smoke_queries
 
@@ -39,6 +41,7 @@ class FastLifecycleResult:
     positive_interaction_count: int
     temporal_split: TemporalSplit
     evaluation: EvaluationReport
+    multivae: MultVAERetriever
 
 
 def run_fast_lifecycle(
@@ -107,15 +110,15 @@ def run_fast_lifecycle(
     snapshot_interactions = derive_positive_interactions(data_snapshot.events)
     popularity = fit_popularity(data_snapshot, snapshot_interactions)
     itemknn = fit_itemknn(data_snapshot, snapshot_interactions)
+    multivae = fit_multivae(data_snapshot, snapshot_interactions, seed=random_seed)
     cohort = build_evaluation_cohort(data_snapshot, temporal_split.future_window_events)
     evaluation = evaluate_retrievers(
-        {"popularity": popularity, "itemknn": itemknn},
+        {"popularity": popularity, "itemknn": itemknn, "multivae": multivae},
         cohort,
     )
     training_seconds = monotonic() - training_started
     evaluation_metrics: dict[str, Any] = {
-        name: retriever.metrics.to_dict()
-        for name, retriever in evaluation.retrievers.items()
+        name: retriever.metrics.to_dict() for name, retriever in evaluation.retrievers.items()
     }
     evaluation_metrics["rrf"] = evaluation.rrf.metrics.to_dict()
     evaluation_metrics["oracle_union_coverage"] = evaluation.oracle_union_coverage
@@ -132,6 +135,7 @@ def run_fast_lifecycle(
             timings={"training": training_seconds},
             evaluation_metrics=evaluation_metrics,
             source_revision=source_revision,
+            multivae_model=multivae,
         )
         artifact.save()
         staged_artifact = ServingArtifact.load(staging_path)
@@ -173,4 +177,5 @@ def run_fast_lifecycle(
         positive_interaction_count=len(snapshot_interactions),
         temporal_split=temporal_split,
         evaluation=evaluation,
+        multivae=multivae,
     )

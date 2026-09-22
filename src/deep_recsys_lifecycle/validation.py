@@ -33,6 +33,22 @@ def validate_smoke_queries(artifact: ServingArtifact) -> None:
             raise SmokeValidationError(f"smoke query is not deterministic: {query.mode}")
         _validate_response(artifact, first, query.mode, observed)
 
+    if artifact.manifest.get("configuration", {}).get("multivae_enabled"):
+        if artifact.multivae is None:
+            raise SmokeValidationError("artifact is missing the Mult-VAE payload")
+        multivae_examples: tuple[tuple[Query, Collection[int]], ...] = (
+            _known_user_example(artifact),
+            _history_only_example(artifact),
+        )
+        for query, observed in multivae_examples:
+            first = service.recommend_with_retriever(query, "multivae").to_dict()
+            second = service.recommend_with_retriever(query, "multivae").to_dict()
+            if first != second:
+                raise SmokeValidationError(
+                    f"Mult-VAE smoke query is not deterministic: {query.mode}"
+                )
+            _validate_response(artifact, first, query.mode, observed, expected_retriever="multivae")
+
     health = artifact.health_metadata()
     if health.get("status") != "ok":
         raise SmokeValidationError("artifact health metadata is not healthy")
@@ -60,8 +76,10 @@ def _validate_response(
     response: dict[str, object],
     mode: str,
     observed: Collection[int],
+    *,
+    expected_retriever: str = "popularity",
 ) -> None:
-    if response.get("query_mode") != mode or response.get("retriever") != "popularity":
+    if response.get("query_mode") != mode or response.get("retriever") != expected_retriever:
         raise SmokeValidationError(f"smoke response has an invalid schema for {mode}")
     provenance = response.get("provenance")
     if not isinstance(provenance, dict):

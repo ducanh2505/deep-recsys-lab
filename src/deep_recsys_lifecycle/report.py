@@ -60,6 +60,7 @@ def write_static_report(
         "positive_interaction_count": positive_count,
         "query_examples": examples,
         "evaluation": evaluation.to_dict() if evaluation is not None else None,
+        "multivae_resource_evidence": artifact.manifest.get("multivae_training", {}),
     }
     data_json = html.escape(json.dumps(embedded_data, indent=2, sort_keys=True))
     evaluation_sections = _evaluation_sections(evaluation)
@@ -74,7 +75,7 @@ def write_static_report(
         "padding:.45rem;text-align:left}th{background:#f4f4f4}</style></head>\n"
         "<body>\n"
         "<h1>Movie Recommender Lifecycle Showcase</h1>\n"
-        "<p>Leakage-free evaluation compares Popularity and ItemKNN Candidate Pools "
+        "<p>Leakage-free evaluation compares Popularity, ItemKNN, and Mult-VAE Candidate Pools "
         "from one temporal lifecycle stage.</p>\n"
         '<section id="data-snapshot"><h2>Data Snapshot 50%</h2>'
         f"<p>{snapshot.event_count} deduplicated Rating Events across "
@@ -90,6 +91,7 @@ def write_static_report(
         '<section id="positive-interactions"><h2>Positive Interactions</h2>'
         f"<p>{positive_count} Rating Events met the {threshold:.1f} threshold.</p></section>\n"
         f"{evaluation_sections}"
+        f"{_multivae_resource_section(artifact)}"
         '<section id="query-modes"><h2>Query modes</h2>'
         "<p>Known-User, History-Only, and Empty-History routes all exclude supplied history "
         "where applicable and return unseen Candidates.</p>"
@@ -106,6 +108,8 @@ def _evaluation_sections(evaluation: EvaluationReport | None) -> str:
             "<p>Evaluation results are not available.</p></section>\n"
             '<section id="itemknn-metrics"><h2>ItemKNN metrics</h2>'
             "<p>Evaluation results are not available.</p></section>\n"
+            '<section id="multivae-metrics"><h2>Mult-VAE metrics</h2>'
+            "<p>Evaluation results are not available.</p></section>\n"
             '<section id="rrf-metrics"><h2>RRF metrics</h2>'
             "<p>Evaluation results are not available.</p></section>\n"
             '<section id="oracle-union"><h2>Oracle Union</h2>'
@@ -115,9 +119,10 @@ def _evaluation_sections(evaluation: EvaluationReport | None) -> str:
     rows = ""
     for name, retriever_evaluation in (*evaluation.retrievers.items(), ("RRF", evaluation.rrf)):
         metrics = retriever_evaluation.metrics
+        display_name = "Mult-VAE" if name == "multivae" else name
         rows += (
             "<tr>"
-            f"<td>{html.escape(name)}</td>"
+            f"<td>{html.escape(display_name)}</td>"
             f"<td>{metrics.coverage_at_200:.4f}</td>"
             f"<td>{metrics.conditional_recall_at_10:.4f}</td>"
             f"<td>{metrics.end_to_end_recall_at_10:.4f}</td>"
@@ -137,6 +142,8 @@ def _evaluation_sections(evaluation: EvaluationReport | None) -> str:
         f"{_metrics_table(evaluation.retrievers.get('popularity'))}</section>\n"
         '<section id="itemknn-metrics"><h2>ItemKNN metrics</h2>'
         f"{_metrics_table(evaluation.retrievers.get('itemknn'))}</section>\n"
+        '<section id="multivae-metrics"><h2>Mult-VAE metrics</h2>'
+        f"{_metrics_table(evaluation.retrievers.get('multivae'))}</section>\n"
         '<section id="rrf-metrics"><h2>RRF metrics</h2>'
         f"{_metrics_table(evaluation.rrf)}</section>\n"
         '<section id="oracle-union"><h2>Oracle Union</h2>'
@@ -159,4 +166,22 @@ def _metrics_table(evaluation: RetrieverEvaluation | None) -> str:
         f"<tr><th>EndToEndRecall@10</th><td>{metrics.end_to_end_recall_at_10:.4f}</td></tr>"
         f"<tr><th>NDCG@10</th><td>{metrics.ndcg_at_10:.4f}</td></tr>"
         "</tbody></table>"
+    )
+
+
+def _multivae_resource_section(artifact: ServingArtifact) -> str:
+    metadata = artifact.manifest.get("multivae_training", {})
+    if not isinstance(metadata, dict):
+        return (
+            '<section id="multivae-resource-evidence"><h2>Mult-VAE resource evidence</h2>'
+            "<p>Training resource evidence is unavailable.</p></section>\n"
+        )
+    actual_device = html.escape(str(metadata.get("actual_device", "unknown")))
+    duration = html.escape(str(metadata.get("duration_seconds", "unknown")))
+    fallback = html.escape(str(metadata.get("fallback_reason") or "none"))
+    return (
+        '<section id="multivae-resource-evidence"><h2>Mult-VAE resource evidence</h2>'
+        f"<p>Training duration: <code>{duration}</code> seconds; "
+        f"actual device: <code>{actual_device}</code>; "
+        f"fallback reason: <code>{fallback}</code>.</p></section>\n"
     )

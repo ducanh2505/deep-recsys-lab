@@ -14,7 +14,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from .serving import PopularityRetriever
+from .serving import MultVAERetriever, PopularityRetriever
 
 if TYPE_CHECKING:
     from .event_store import DataSnapshot
@@ -124,6 +124,7 @@ class ArtifactManifest:
     random_seed: int
     training_device: str
     serving_device: str
+    multivae_training: dict[str, Any]
     timings: dict[str, float]
     evaluation_metrics: dict[str, Any]
     payload_inventory: tuple[PayloadDescriptor, ...]
@@ -140,9 +141,7 @@ class ArtifactManifest:
 
         schema_version = _required_int(value, "artifact_schema_version")
         if schema_version != ARTIFACT_SCHEMA_VERSION:
-            raise ArtifactValidationError(
-                f"unsupported artifact schema version: {schema_version}"
-            )
+            raise ArtifactValidationError(f"unsupported artifact schema version: {schema_version}")
         artifact_version = _required_int(value, "artifact_version")
         if artifact_version != ARTIFACT_SCHEMA_VERSION:
             raise ArtifactValidationError(f"unsupported artifact version: {artifact_version}")
@@ -236,12 +235,26 @@ class ArtifactManifest:
         ):
             raise ArtifactValidationError("manifest configuration is incompatible with serving")
 
+        raw_multivae_training = value.get("multivae_training", {})
+        if configuration.get("multivae_enabled") and "multivae_training" not in value:
+            raise ArtifactValidationError("manifest is missing Mult-VAE training provenance")
+        if raw_multivae_training and configuration.get("multivae_enabled") is not True:
+            raise ArtifactValidationError("manifest Mult-VAE configuration is incomplete")
+        if configuration.get("multivae_enabled") is True and not isinstance(
+            configuration.get("multivae"), Mapping
+        ):
+            raise ArtifactValidationError("manifest Mult-VAE configuration is missing")
+        if not isinstance(raw_multivae_training, Mapping):
+            raise ArtifactValidationError("manifest multivae_training must be an object")
+        if raw_multivae_training:
+            _validate_multivae_training(raw_multivae_training, random_seed)
+        multivae_training = dict(raw_multivae_training)
+
         raw_timings = value["timings"]
         if not isinstance(raw_timings, Mapping):
             raise ArtifactValidationError("manifest timings must be an object")
         timings = {
-            key: _nonnegative_number(raw_timings, key)
-            for key in ("training", "export", "smoke")
+            key: _nonnegative_number(raw_timings, key) for key in ("training", "export", "smoke")
         }
         for key, _raw_timing in raw_timings.items():
             if key not in timings:
@@ -287,6 +300,7 @@ class ArtifactManifest:
             random_seed=random_seed,
             training_device=training_device,
             serving_device=serving_device,
+            multivae_training=multivae_training,
             timings=timings,
             evaluation_metrics=evaluation_metrics,
             payload_inventory=payload_inventory,
@@ -319,6 +333,7 @@ class ArtifactManifest:
             "random_seed": self.random_seed,
             "training_device": self.training_device,
             "serving_device": self.serving_device,
+            "multivae_training": self.multivae_training,
             "timings": self.timings,
             "evaluation_metrics": self.evaluation_metrics,
             "payload_inventory": [item.to_dict() for item in self.payload_inventory],
@@ -353,10 +368,12 @@ class ServingArtifact:
         path: Path,
         manifest: dict[str, Any],
         model: PopularityRetriever,
+        multivae: MultVAERetriever | None = None,
     ) -> None:
         self.path = path
         self.manifest = manifest
         self.model = model
+        self.multivae = multivae
 
     @property
     def artifact_id(self) -> str:
@@ -384,16 +401,23 @@ class ServingArtifact:
         data_cutoff_percentage: int = 50,
         configuration: Mapping[str, Any] | None = None,
         random_seed: int = 42,
-        training_device: str = "cpu",
+        training_device: str | None = None,
         serving_device: str = "cpu",
         timings: Mapping[str, float] | None = None,
         evaluation_metrics: Mapping[str, Any] | None = None,
         source_revision: str | None = None,
+        multivae_model: MultVAERetriever | None = None,
     ) -> ServingArtifact:
         # Keep fitting behind the export seam; the runtime loader imports only serving.py.
+        from .multivae import fit_multivae
         from .popularity import fit_popularity
 
         model = fit_popularity(snapshot, interactions)
+        fitted_multivae = multivae_model or fit_multivae(snapshot, interactions, seed=random_seed)
+        multivae_metadata = dict(fitted_multivae.training_metadata)
+        # Preserve the #36 top-level field as the CPU artifact/runtime device.  The actual
+        # neural training device is recorded precisely in multivae_training.actual_device.
+        resolved_training_device = training_device or "cpu"
         source_event_values = tuple(source_events) if source_events is not None else snapshot.events
         resolved_configuration = {
             "profile": "fast",
@@ -404,8 +428,10 @@ class ServingArtifact:
             "candidate_pool_limit": 200,
             "query_modes": list(SUPPORTED_QUERY_MODES),
             "random_seed": random_seed,
-            "training_device": training_device,
+            "training_device": resolved_training_device,
             "serving_device": serving_device,
+            "multivae_enabled": True,
+            "multivae": dict(fitted_multivae.configuration),
             **dict(configuration or {}),
         }
         configuration_checksum = canonical_configuration_checksum(resolved_configuration)
@@ -446,14 +472,15 @@ class ServingArtifact:
             "configuration": resolved_configuration,
             "configuration_sha256": configuration_checksum,
             "random_seed": random_seed,
-            "training_device": training_device,
+            "training_device": resolved_training_device,
             "serving_device": serving_device,
+            "multivae_training": multivae_metadata,
             "timings": resolved_timings,
             "evaluation_metrics": dict(evaluation_metrics or {}),
             "payload_inventory": [],
             "source_revision": source_revision_value,
         }
-        return cls(path=path, manifest=manifest, model=model)
+        return cls(path=path, manifest=manifest, model=model, multivae=fitted_multivae)
 
     def save(self) -> None:
         """Write one new bundle; an existing directory is never modified."""
@@ -464,7 +491,13 @@ class ServingArtifact:
         self.path.mkdir()
         try:
             export_started = monotonic()
-            model_payload = canonical_json_bytes(self.model.to_dict())
+            model_payload = canonical_json_bytes(
+                {
+                    "payload_schema_version": 2,
+                    "popularity": self.model.to_dict(),
+                    "multivae": self.multivae.to_dict() if self.multivae is not None else None,
+                }
+            )
             model_sha256 = sha256_bytes(model_payload)
             manifest = {**self.manifest}
             manifest["timings"] = {
@@ -551,12 +584,40 @@ class ServingArtifact:
         if not isinstance(model_value, Mapping):
             raise ArtifactValidationError("Serving Artifact model payload must be a JSON object")
         try:
-            model = PopularityRetriever.from_dict(model_value)
+            if "payload_schema_version" in model_value:
+                if model_value.get("payload_schema_version") != 2:
+                    raise ValueError("unsupported composite payload schema")
+                raw_popularity = model_value.get("popularity")
+                raw_multivae = model_value.get("multivae")
+                if not isinstance(raw_popularity, Mapping) or not isinstance(raw_multivae, Mapping):
+                    raise ValueError("composite payload is missing Popularity or Mult-VAE state")
+                model = PopularityRetriever.from_dict(raw_popularity)
+                multivae = MultVAERetriever.from_dict(raw_multivae)
+            else:
+                model = PopularityRetriever.from_dict(model_value)
+                multivae = None
         except ValueError as error:
             raise ArtifactValidationError(
                 f"Serving Artifact model payload is invalid: {error}"
             ) from error
-        return cls(path=path, manifest=manifest, model=model)
+        if multivae is not None:
+            manifest_multivae_configuration = manifest.get("configuration", {}).get("multivae")
+            if not isinstance(manifest_multivae_configuration, Mapping) or dict(
+                manifest_multivae_configuration
+            ) != dict(multivae.configuration):
+                raise ArtifactValidationError(
+                    "Serving Artifact Mult-VAE configuration is incompatible with its manifest"
+                )
+            manifest_training = manifest.get("multivae_training")
+            if not isinstance(manifest_training, Mapping) or dict(manifest_training) != dict(
+                multivae.training_metadata
+            ):
+                raise ArtifactValidationError(
+                    "Serving Artifact Mult-VAE provenance is incompatible with its manifest"
+                )
+        if manifest.get("configuration", {}).get("multivae_enabled") and multivae is None:
+            raise ArtifactValidationError("Serving Artifact is missing its Mult-VAE payload")
+        return cls(path=path, manifest=manifest, model=model, multivae=multivae)
 
     def health_metadata(self) -> dict[str, object]:
         return {
@@ -567,6 +628,7 @@ class ServingArtifact:
             "retriever": self.manifest["retriever"],
             "query_modes": self.manifest["query_modes"],
             "serving_device": self.manifest["serving_device"],
+            "multivae_loaded": self.multivae is not None,
         }
 
 
@@ -787,6 +849,38 @@ def _validate_metric_tree(value: object, label: str) -> None:
         raise ArtifactValidationError(f"{label} must contain only finite numeric values")
 
 
+def _validate_multivae_training(value: Mapping[object, object], random_seed: int) -> None:
+    required = {
+        "requested_device",
+        "actual_device",
+        "duration_seconds",
+        "seed",
+        "fallback_reason",
+        "hyperparameters",
+    }
+    missing = sorted(required - value.keys())
+    if missing:
+        raise ArtifactValidationError(f"manifest multivae_training is missing: {missing}")
+    requested_device = value.get("requested_device")
+    actual_device = value.get("actual_device")
+    if requested_device not in {"cpu", "mps"}:
+        raise ArtifactValidationError("manifest Mult-VAE requested_device is invalid")
+    if actual_device not in {"cpu", "mps"}:
+        raise ArtifactValidationError("manifest Mult-VAE actual_device is invalid")
+    if _number_value(value.get("duration_seconds"), "Mult-VAE duration_seconds") < 0:
+        raise ArtifactValidationError("Mult-VAE duration_seconds cannot be negative")
+    seed = value.get("seed")
+    if not isinstance(seed, int) or isinstance(seed, bool) or seed != random_seed:
+        raise ArtifactValidationError("manifest Mult-VAE seed is incompatible with random_seed")
+    fallback_reason = value.get("fallback_reason")
+    if fallback_reason is not None and (
+        not isinstance(fallback_reason, str) or not fallback_reason
+    ):
+        raise ArtifactValidationError("manifest Mult-VAE fallback_reason must be null or text")
+    if not isinstance(value.get("hyperparameters"), Mapping):
+        raise ArtifactValidationError("manifest Mult-VAE hyperparameters must be an object")
+
+
 def _validate_sha256(value: str, label: str) -> None:
     if not _SHA256_RE.fullmatch(value):
         raise ArtifactValidationError(f"{label} must be a lowercase SHA-256 checksum")
@@ -808,9 +902,7 @@ def _manifest_checksum(manifest: Mapping[str, Any]) -> str:
 
 def _safe_payload_path(root: Path, payload_name: str) -> Path:
     windows_absolute = (
-        len(payload_name) >= 3
-        and payload_name[1] == ":"
-        and payload_name[2] in "/\\"
+        len(payload_name) >= 3 and payload_name[1] == ":" and payload_name[2] in "/\\"
     )
     if not payload_name or windows_absolute or "\\" in payload_name or "\x00" in payload_name:
         raise ArtifactValidationError(f"invalid payload path: {payload_name!r}")

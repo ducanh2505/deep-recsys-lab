@@ -66,7 +66,7 @@ class RecommendationResult:
 
 
 class RecommendationService:
-    """Route the three public Query modes to the Popularity artifact."""
+    """Route public API queries and expose loaded retriever smoke seams."""
 
     def __init__(self, artifact: ServingArtifact) -> None:
         self.artifact = artifact
@@ -86,6 +86,41 @@ class RecommendationService:
             query_mode=query.mode,
             candidates=self.artifact.model.recommend(excluded, top_n),
             retriever="popularity",
+            artifact_fingerprint=str(self.artifact.manifest["data_snapshot_fingerprint"]),
+            artifact_id=self.artifact.artifact_id,
+            bundle_fingerprint=self.artifact.artifact_fingerprint,
+        )
+
+    def recommend_with_retriever(
+        self,
+        query: Query,
+        retriever: str,
+        top_n: int = 10,
+    ) -> RecommendationResult:
+        """Run a loaded Candidate Retriever without changing the public API fallback.
+
+        Empty-History intentionally has no Mult-VAE route.  The public ``recommend`` method
+        remains Popularity for every query until learned fusion is implemented.
+        """
+
+        if retriever == "popularity":
+            return self.recommend(query, top_n=top_n)
+        if retriever != "multivae":
+            raise ValueError(f"unsupported serving retriever: {retriever}")
+        if isinstance(query, EmptyHistoryQuery):
+            raise ValueError("Mult-VAE does not serve Empty-History queries")
+        if self.artifact.multivae is None:
+            raise ValueError("Serving Artifact has no Mult-VAE payload")
+        if isinstance(query, KnownUserQuery):
+            history = self.artifact.multivae.subject_histories.get(query.subject_id)
+            if history is None:
+                raise UnknownSubjectError(query.subject_id)
+        else:
+            history = query.movie_ids
+        return RecommendationResult(
+            query_mode=query.mode,
+            candidates=self.artifact.multivae.recommend(history, top_n),
+            retriever="multivae",
             artifact_fingerprint=str(self.artifact.manifest["data_snapshot_fingerprint"]),
             artifact_id=self.artifact.artifact_id,
             bundle_fingerprint=self.artifact.artifact_fingerprint,
