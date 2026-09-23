@@ -20,6 +20,7 @@ evidence.
 - [Implementation roadmap](docs/roadmap.md)
 - [Architecture decisions](docs/adr/)
 - [Serving Artifact contract](docs/artifacts.md)
+- [Full MovieLens 20M results and resume evidence](docs/full-profile-results.md)
 - [Tracking issue #36](https://github.com/ducanh2505/deep-recsys-lab/issues/36)
 - [Tracking issue #37](https://github.com/ducanh2505/deep-recsys-lab/issues/37)
 - [Tracking issue #38](https://github.com/ducanh2505/deep-recsys-lab/issues/38)
