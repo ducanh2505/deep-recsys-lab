@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import shutil
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
@@ -18,6 +21,7 @@ class DataSnapshot:
 
     events: tuple[RatingEvent, ...]
     source_batch_count: int = field(compare=False)
+    _fingerprint: str | None = field(default=None, init=False, compare=False, repr=False)
 
     @property
     def event_count(self) -> int:
@@ -33,13 +37,22 @@ class DataSnapshot:
 
     @property
     def fingerprint(self) -> str:
-        payload = json.dumps(
-            [event.to_dict() for event in self.events],
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        return sha256(payload).hexdigest()
+        if self._fingerprint is not None:
+            return self._fingerprint
+        digest = sha256()
+        digest.update(b"[")
+        for index, event in enumerate(self.events):
+            if index:
+                digest.update(b",")
+            digest.update(
+                json.dumps(
+                    event.to_dict(), ensure_ascii=True, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+            )
+        digest.update(b"]")
+        value = digest.hexdigest()
+        object.__setattr__(self, "_fingerprint", value)
+        return value
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,8 +63,16 @@ class DataSnapshot:
         }
 
     def write_json(self, path: Path) -> None:
+        # Large snapshots remain reproducible from the append-only Parquet Event Store.
+        # Embedding millions of duplicate source rows in a JSON sidecar serves no audit purpose.
+        value = self.to_dict() if self.event_count <= 100_000 else {
+            "event_count": self.event_count,
+            "source_batch_count": self.source_batch_count,
+            "fingerprint": self.fingerprint,
+            "events_embedded": False,
+        }
         path.write_text(
-            json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n",
+            json.dumps(value, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
 
@@ -88,15 +109,79 @@ class AppendOnlyEventStore:
             events.extend(RatingEvent.from_dict(row) for row in rows)
         return tuple(events)
 
-    def materialize_snapshot(self) -> DataSnapshot:
-        unique: dict[str, RatingEvent] = {}
-        for event in self.read_all():
-            previous = unique.get(event.event_id)
-            if previous is not None and previous != event:
-                raise ValueError(f"event id {event.event_id!r} has conflicting payloads")
-            unique[event.event_id] = event
+    def iter_event_ids(self) -> Iterator[str]:
+        """Scan only the identity column when checking a large persisted prefix."""
 
-        ordered = tuple(
-            sorted(unique.values(), key=lambda event: (event.event_time, event.event_id))
-        )
-        return DataSnapshot(events=ordered, source_batch_count=len(self.batch_paths))
+        for batch_path in self.batch_paths:
+            parquet = pq.ParquetFile(batch_path)
+            for batch in parquet.iter_batches(columns=["event_id"], batch_size=65_536):
+                yield from batch.column(0).to_pylist()
+
+    def materialize_snapshot(self) -> DataSnapshot:
+        paths = self.batch_paths
+        if not paths:
+            return DataSnapshot(events=(), source_batch_count=0)
+        connection = duckdb.connect()
+        temp_dir = self.root / ".duckdb-temp"
+        temp_dir.mkdir(exist_ok=True)
+        parquet_paths = [str(path.resolve()) for path in paths]
+        try:
+            connection.execute("SET memory_limit = '6GB'")
+            connection.execute("SET temp_directory = ?", [str(temp_dir.resolve())])
+            conflict = connection.execute(
+                """
+                SELECT event_id
+                FROM read_parquet(?)
+                GROUP BY event_id
+                HAVING count(DISTINCT subject_id) > 1
+                    OR count(DISTINCT movie_id) > 1
+                    OR count(DISTINCT rating) > 1
+                    OR count(DISTINCT event_time) > 1
+                    OR count(DISTINCT source) > 1
+                LIMIT 1
+                """,
+                [parquet_paths],
+            ).fetchone()
+            if conflict is not None:
+                raise ValueError(f"event id {conflict[0]!r} has conflicting payloads")
+            batches = connection.execute(
+                """
+                SELECT
+                    event_id,
+                    min(subject_id) AS subject_id,
+                    min(movie_id) AS movie_id,
+                    min(rating) AS rating,
+                    min(event_time) AS event_time,
+                    min(source) AS source
+                FROM read_parquet(?)
+                GROUP BY event_id
+                ORDER BY event_time, event_id
+                """,
+                [parquet_paths],
+            ).to_arrow_reader(batch_size=65_536)
+            events: list[RatingEvent] = []
+            for batch in batches:
+                rows = batch.to_pydict()
+                events.extend(
+                    RatingEvent(
+                        event_id=event_id,
+                        subject_id=subject_id,
+                        movie_id=movie_id,
+                        rating=rating,
+                        event_time=event_time,
+                        source=source,
+                    )
+                    for event_id, subject_id, movie_id, rating, event_time, source in zip(
+                        rows["event_id"],
+                        rows["subject_id"],
+                        rows["movie_id"],
+                        rows["rating"],
+                        rows["event_time"],
+                        rows["source"],
+                        strict=True,
+                    )
+                )
+            return DataSnapshot(events=tuple(events), source_batch_count=len(paths))
+        finally:
+            connection.close()
+            shutil.rmtree(temp_dir, ignore_errors=True)

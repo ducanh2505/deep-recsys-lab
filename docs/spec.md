@@ -100,6 +100,9 @@ contract are secondary seams where failures require narrower diagnosis.
 - The repository starts from an orphan history and shares no ancestor with `main`.
 - MovieLens 20M is downloaded from its official source, verified, acknowledged, and never
   committed with generated data or model artifacts.
+- The full profile trains Mult-VAE and LightGCN on every available Positive Interaction at
+  each Data Snapshot; no interaction sampling budget is permitted. Epoch count and batch size
+  remain explicit, reproducible profile parameters.
 - A Rating Event retains the source rating. Positive Interaction preparation applies a rating
   threshold of 4.0; lower ratings do not become negatives.
 - A single Kafka broker, topic, and partition provide the local ingestion boundary and stable
@@ -111,7 +114,11 @@ contract are secondary seams where failures require narrower diagnosis.
 - Each snapshot from 50% through 90% is evaluated against the next Future Window before that
   window is ingested. The 100% artifact has no future-quality claim.
 - One Gold Candidate per eligible Subject is the first Positive Interaction in the Future
-  Window. Fast and full cohorts contain at most 1,000 and 5,000 deterministic Subjects.
+  Window. Fast and full cohorts contain at most 1,000 and 5,000 deterministic Subjects, chosen
+  by a stable seed-and-Subject-ID hash before applying the same selection to each Query mode.
+- The Empty-History Evaluation Cohort contains Subjects with a Future Window Positive
+  Interaction but no Data Snapshot Positive Interaction. Popularity alone serves these Queries;
+  an empty cohort is reported as n/a with denominator zero.
 - Every Candidate Retriever searches the available unseen Candidate Catalog and emits Top-200.
 - Known-User Queries use Popularity, ItemKNN, Mult-VAE, and LightGCN. History-Only Queries omit
   LightGCN. Empty-History Queries use Popularity without fusion.
@@ -120,10 +127,15 @@ contract are secondary seams where failures require narrower diagnosis.
   length and user-cold status; and snapshot-bounded item popularity and interaction-new status.
 - Separate Known-User and History-Only fusion artifacts are trained because their retriever
   banks differ. LHF supplies the final MVP ordering; there is no downstream learned ranker.
+- Full-profile LHF validation retains every naturally retrieved positive row and up to 20
+  deterministic negative rows per Query. The sampling seed and cap are artifact configuration;
+  this budget does not apply to neural retriever Positive Interactions.
 - RRF is an executable heuristic baseline. The Oracle Union is diagnostic only and cannot be
   served as a ranker.
 - Headline evaluation reports Retrieval Coverage@200, Oracle headroom realized,
   ConditionalRecall@10, end-to-end Recall@10, NDCG@10, and CatalogCoverage@10.
+- CatalogCoverage@10 is the number of distinct, eligible Movies returned in the Top-10 across
+  the cohort divided by the snapshot Candidate Catalog size. An empty cohort reports n/a.
 - The report segments Empty-History, 1-4, 5-19, and 20-plus interaction regimes and separates
   Known-User from History-Only Queries.
 - The service exposes one recommendation operation with mutually exclusive known-subject and

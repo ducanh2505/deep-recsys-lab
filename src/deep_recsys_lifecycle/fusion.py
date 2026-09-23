@@ -4,6 +4,7 @@ import math
 import os
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from hashlib import sha256
 from typing import Any, Literal
 
 from .event_store import DataSnapshot
@@ -242,8 +243,18 @@ def build_lhf_training_rows(
     cohort: Any,
     pools: Mapping[int | str, Mapping[str, Sequence[Candidate]]],
     feature_builder: FusionFeatureBuilder,
+    *,
+    max_negative_rows_per_query: int | None = None,
+    seed: int = 42,
 ) -> tuple[FusionTrainingRow, ...]:
     """Make validation labels from naturally present union rows only."""
+
+    if max_negative_rows_per_query is not None and (
+        isinstance(max_negative_rows_per_query, bool) or max_negative_rows_per_query < 1
+    ):
+        raise ValueError("max_negative_rows_per_query must be positive")
+    if not isinstance(seed, int) or isinstance(seed, bool):
+        raise ValueError("fusion row sampling seed must be an integer")
 
     rows: list[FusionTrainingRow] = []
     expected_names = set(feature_builder.retriever_bank)
@@ -254,7 +265,24 @@ def build_lhf_training_rows(
         if unknown_retrievers:
             raise ValueError(f"fusion pools contain ineligible retrievers: {unknown_retrievers}")
         union = build_candidate_union(query_pools, history=query.history)
-        for candidate in union:
+        selected = union
+        if max_negative_rows_per_query is not None:
+            positive = tuple(
+                candidate for candidate in union if candidate.movie_id == query.gold_movie_id
+            )
+            negatives = sorted(
+                (
+                    candidate
+                    for candidate in union
+                    if candidate.movie_id != query.gold_movie_id
+                ),
+                key=lambda candidate: (
+                    sha256(f"{seed}:{key}:{candidate.movie_id}".encode()).digest(),
+                    candidate.movie_id,
+                ),
+            )[:max_negative_rows_per_query]
+            selected = tuple(sorted((*positive, *negatives), key=lambda item: item.movie_id))
+        for candidate in selected:
             rows.append(
                 FusionTrainingRow(
                     query_key=key,

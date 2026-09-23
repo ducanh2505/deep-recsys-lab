@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import math
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+from .dense_scoring import LightGCNScorer, MultVAEScorer
 from .models import Candidate
 from .retriever import MAX_CANDIDATE_POOL, validate_candidate_pool_limit
+from .sparse_scoring import SparseItemKNNScorer
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +113,9 @@ class ItemKNNRetriever:
     catalog: tuple[int, ...]
     item_subjects: Mapping[int, frozenset[int]]
     subject_histories: Mapping[int, tuple[int, ...]]
+    _sparse_scorer: SparseItemKNNScorer | None = field(
+        default=None, init=False, compare=False, repr=False
+    )
 
     @property
     def name(self) -> str:
@@ -131,6 +136,18 @@ class ItemKNNRetriever:
         limit: int = MAX_CANDIDATE_POOL,
     ) -> tuple[Candidate, ...]:
         validate_candidate_pool_limit(limit)
+        if len(self.catalog) > 1_000:
+            if self._sparse_scorer is None:
+                object.__setattr__(
+                    self,
+                    "_sparse_scorer",
+                    SparseItemKNNScorer(
+                        self.catalog, self.item_subjects, self.subject_histories
+                    ),
+                )
+            scorer = self._sparse_scorer
+            assert scorer is not None
+            return scorer.candidate_pool(history, limit)
         excluded = set(history)
         scored = (
             (
@@ -236,6 +253,9 @@ class MultVAERetriever:
     output_bias: tuple[float, ...]
     configuration: Mapping[str, Any]
     training_metadata: Mapping[str, Any]
+    _dense_scorer: MultVAEScorer | None = field(
+        default=None, init=False, compare=False, repr=False
+    )
 
     @property
     def name(self) -> str:
@@ -271,6 +291,28 @@ class MultVAERetriever:
         limit: int = MAX_CANDIDATE_POOL,
     ) -> tuple[Candidate, ...]:
         validate_candidate_pool_limit(limit)
+        if len(self.catalog) > 1_000:
+            if self._dense_scorer is None:
+                object.__setattr__(
+                    self,
+                    "_dense_scorer",
+                    MultVAEScorer(
+                        self.catalog,
+                        {
+                            "encoder_weight": self.encoder_weight,
+                            "encoder_bias": self.encoder_bias,
+                            "mean_weight": self.mean_weight,
+                            "mean_bias": self.mean_bias,
+                            "decoder_weight": self.decoder_weight,
+                            "decoder_bias": self.decoder_bias,
+                            "output_weight": self.output_weight,
+                            "output_bias": self.output_bias,
+                        },
+                    ),
+                )
+            scorer = self._dense_scorer
+            assert scorer is not None
+            return scorer.candidate_pool(history, limit)
         observed = set(history)
         profile = self.profile_for_history(history)
         if not any(profile):
@@ -495,6 +537,9 @@ class LightGCNRetriever:
     movie_embeddings: tuple[tuple[float, ...], ...]
     configuration: Mapping[str, Any]
     training_metadata: Mapping[str, Any]
+    _dense_scorer: LightGCNScorer | None = field(
+        default=None, init=False, compare=False, repr=False
+    )
 
     @property
     def name(self) -> str:
@@ -527,6 +572,21 @@ class LightGCNRetriever:
         limit: int = MAX_CANDIDATE_POOL,
     ) -> tuple[Candidate, ...]:
         validate_candidate_pool_limit(limit)
+        if len(self.movie_ids) > 1_000:
+            if self._dense_scorer is None:
+                object.__setattr__(
+                    self,
+                    "_dense_scorer",
+                    LightGCNScorer(
+                        self.subject_ids,
+                        self.movie_ids,
+                        self.subject_embeddings,
+                        self.movie_embeddings,
+                    ),
+                )
+            scorer = self._dense_scorer
+            assert scorer is not None
+            return scorer.candidate_pool(subject_id, history, limit)
         subject_index = self.index_by_subject_id.get(subject_id)
         if subject_index is None:
             raise KeyError(f"LightGCN has no embedding for Subject {subject_id}")

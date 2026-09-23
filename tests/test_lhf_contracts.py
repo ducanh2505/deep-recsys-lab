@@ -1,3 +1,5 @@
+import pytest
+
 from deep_recsys_lifecycle.evaluation import EvaluationCohort, EvaluationQuery
 from deep_recsys_lifecycle.event_store import DataSnapshot
 from deep_recsys_lifecycle.fusion import (
@@ -191,6 +193,38 @@ def test_history_only_rows_have_no_subject_identity_or_lightgcn_feature() -> Non
     assert rows[0].query_key == "history-query-1"
     assert "lightgcn" not in builder.retriever_bank
     assert all("lightgcn" not in name for name in builder.feature_names)
+
+
+def test_fusion_row_budget_keeps_gold_and_selects_negatives_deterministically() -> None:
+    builder = _builder()
+    cohort = EvaluationCohort(
+        queries=(EvaluationQuery(subject_id=1, history=(10,), gold_movie_id=15),)
+    )
+    candidates = tuple(
+        Candidate(movie_id=movie_id, score=float(movie_id), rank=rank)
+        for rank, movie_id in enumerate(range(11, 31), start=1)
+    )
+    pools = {1: {name: candidates for name in builder.retriever_bank}}
+
+    first = build_lhf_training_rows(
+        cohort, pools, builder, max_negative_rows_per_query=3, seed=42
+    )
+    second = build_lhf_training_rows(
+        cohort, pools, builder, max_negative_rows_per_query=3, seed=42
+    )
+
+    assert first == second
+    assert len(first) == 4
+    assert [row.movie_id for row in first] == sorted(row.movie_id for row in first)
+    assert [(row.movie_id, row.label) for row in first if row.label] == [(15, 1)]
+
+
+def test_fusion_row_budget_validates_limit_and_seed() -> None:
+    builder = _builder()
+    with pytest.raises(ValueError, match="max_negative_rows_per_query"):
+        build_lhf_training_rows((), {}, builder, max_negative_rows_per_query=0)
+    with pytest.raises(ValueError, match="sampling seed"):
+        build_lhf_training_rows((), {}, builder, seed=True)
 
 
 def test_trained_classifier_round_trip_and_fallback_order_are_deterministic() -> None:

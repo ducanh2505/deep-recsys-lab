@@ -59,6 +59,20 @@ def test_rolling_does_not_publish_the_whole_source_at_stage_50(tmp_path: Path) -
     assert kafka.published_counts == [20, 4, 4, 4, 4, 4]
 
 
+def test_rolling_evaluation_respects_declared_cohort_limit(tmp_path: Path) -> None:
+    result = run_rolling_lifecycle(
+        output_dir=tmp_path / "rolling",
+        kafka=InMemoryKafkaBoundary(),
+        source_events=load_movielens_fixture(),
+        evaluation_cohort_limit=2,
+    )
+
+    for stage in result.stages[:-1]:
+        assert stage.evaluation is not None
+        for mode in ("known_user", "history_only", "empty_history"):
+            assert stage.evaluation[mode]["cohort_size"] <= 2
+
+
 def test_rolling_evaluates_each_future_window_before_ingesting_it(tmp_path: Path) -> None:
     events: list[tuple[str, int]] = []
     observed_store_counts: dict[int, int] = {}
@@ -121,6 +135,8 @@ def test_rolling_lhf_uses_only_prior_validation_and_100_has_no_future_metrics(
         assert set(evaluation["future_window"]["event_ids"]) == future_ids
         assert evaluation["validation_pools"]["known_user"]
         assert evaluation["validation_pools"]["history_only"]
+        assert "empty_history" in evaluation["evaluation"]
+        assert "CatalogCoverage@10" in evaluation["evaluation"]["known_user"]["lhf"]
 
     final_manifest = json.loads(
         (result.stages[-1].artifact_path / "manifest.json").read_text(encoding="utf-8")
@@ -130,6 +146,8 @@ def test_rolling_lhf_uses_only_prior_validation_and_100_has_no_future_metrics(
     report = result.report_path.read_text(encoding="utf-8")
     assert "Stage 100 has no Future Window" in report
     assert "Known-User" in report and "History-Only" in report
+    assert "Empty-History quality" in report
+    assert "CatalogCoverage@10" in report
 
 
 def test_interrupted_rolling_reuses_completed_artifact_bytes(tmp_path: Path) -> None:

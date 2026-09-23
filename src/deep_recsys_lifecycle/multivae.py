@@ -110,9 +110,10 @@ def fit_multivae(
         subject_id: history_movie_ids(subject_interactions)
         for subject_id, subject_interactions in sorted(histories.items())
     }
+    movie_index = {movie_id: index for index, movie_id in enumerate(catalog)}
     profiles = tuple(
-        tuple(float(movie_id in set(history)) for movie_id in catalog)
-        for _subject_id, history in subject_histories.items()
+        tuple(movie_index[movie_id] for movie_id in history)
+        for history in subject_histories.values()
     )
 
     requested_device = "mps" if device_preference in {"auto", "mps"} else "cpu"
@@ -148,6 +149,9 @@ def fit_multivae(
         "seed": seed,
         "fallback_reason": fallback_reason,
         "hyperparameters": resolved_config.to_dict(),
+        "positive_interactions_seen": sum(len(values) for values in histories.values()),
+        "binary_profile_edges": sum(len(history) for history in subject_histories.values()),
+        "subject_profiles_trained": len(profiles),
     }
     configuration: dict[str, Any] = {
         **resolved_config.to_dict(),
@@ -179,7 +183,7 @@ def _mps_is_available() -> bool:
 
 
 def _train_once(
-    profiles: tuple[tuple[float, ...], ...],
+    profiles: tuple[tuple[int, ...], ...],
     item_count: int,
     config: MultVAEConfig,
     seed: int,
@@ -189,12 +193,18 @@ def _train_once(
     torch.manual_seed(seed)
     model = _MultiVAE(item_count, config).to(torch.device(device_name))
     if profiles:
-        target = torch.tensor(profiles, dtype=torch.float32, device=torch.device(device_name))
         optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
         model.train()
         for epoch in range(config.epochs):
             for start in range(0, len(profiles), config.batch_size):
-                batch = target[start : start + config.batch_size]
+                profile_batch = profiles[start : start + config.batch_size]
+                batch = torch.zeros(
+                    (len(profile_batch), item_count),
+                    dtype=torch.float32,
+                    device=torch.device(device_name),
+                )
+                for row_index, observed_indices in enumerate(profile_batch):
+                    batch[row_index, list(observed_indices)] = 1.0
                 logits, mean, log_variance = model(batch)
                 negative_log_likelihood = (
                     -(functional.log_softmax(logits, dim=1) * batch).sum(dim=1).mean()

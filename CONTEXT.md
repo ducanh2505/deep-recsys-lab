@@ -99,6 +99,12 @@ The first Positive Interaction for a Subject in the Future Window, used as the t
 evaluation Query.
 _Avoid_: Ground-truth item, Positive sample
 
+**Empty-History Evaluation Cohort**:
+Subjects with a Positive Interaction in the Future Window and no Positive Interactions in the
+Data Snapshot. Their first Future Window Positive Interaction is the Gold Candidate, and the
+served Query has no Subject identity or preference history.
+_Avoid_: Masked existing-user cohort
+
 **Retrieval Coverage**:
 The share of evaluation Queries for which the Gold Candidate appears in a bounded Candidate
 Pool.

@@ -30,6 +30,7 @@ def write_static_report(
     temporal_split: TemporalSplit | None = None,
     evaluation: EvaluationReport | None = None,
     history_only_evaluation: EvaluationReport | None = None,
+    empty_history_evaluation: EvaluationReport | None = None,
 ) -> None:
     """Write a self-contained HTML report for the temporal evaluation stage."""
 
@@ -71,6 +72,9 @@ def write_static_report(
             "history_only": (
                 history_only_evaluation.to_dict() if history_only_evaluation is not None else None
             ),
+            "empty_history": (
+                empty_history_evaluation.to_dict() if empty_history_evaluation is not None else None
+            ),
         },
         "multivae_resource_evidence": artifact.manifest.get("multivae_training", {}),
         "lightgcn_resource_evidence": artifact.manifest.get("lightgcn_training", {}),
@@ -105,6 +109,7 @@ def write_static_report(
         '<section id="positive-interactions"><h2>Positive Interactions</h2>'
         f"<p>{positive_count} Rating Events met the {threshold:.1f} threshold.</p></section>\n"
         f"{evaluation_sections}"
+        f"{_empty_history_fast_section(empty_history_evaluation)}"
         f"{_multivae_resource_section(artifact)}"
         f"{_lightgcn_resource_section(artifact)}"
         '<section id="query-modes"><h2>Query modes</h2>'
@@ -143,6 +148,8 @@ def _evaluation_sections(
         else '<section id="history-only-comparison"><h2>History-Only comparison</h2>'
         "<p>History-Only evaluation is not available.</p></section>\n"
     )
+
+
     known_section = _mode_comparison(evaluation, "Known-User")
     rows = ""
     for name, retriever_evaluation in (
@@ -163,11 +170,13 @@ def _evaluation_sections(
             f"<td>{metrics.conditional_recall_at_10:.4f}</td>"
             f"<td>{metrics.end_to_end_recall_at_10:.4f}</td>"
             f"<td>{metrics.ndcg_at_10:.4f}</td>"
+            f"<td>{_display_catalog_coverage(metrics.catalog_coverage_at_10)}</td>"
             "</tr>"
         )
     table = (
         "<table><thead><tr><th>Retriever</th><th>Coverage@200</th>"
         "<th>ConditionalRecall@10</th><th>EndToEndRecall@10</th><th>NDCG@10</th>"
+        "<th>CatalogCoverage@10</th>"
         f"</tr></thead><tbody>{rows}</tbody></table>"
     )
     return (
@@ -198,6 +207,18 @@ def _evaluation_sections(
     )
 
 
+def _empty_history_fast_section(evaluation: EvaluationReport | None) -> str:
+    if evaluation is None:
+        return '<section id="empty-history-quality"><h2>Empty-History quality</h2><p>n/a</p></section>\n'
+    return (
+        '<section id="empty-history-quality"><h2>Empty-History quality</h2>'
+        "<p>Popularity fallback; Gold Candidates come from Subjects with no snapshot Positive "
+        "Interactions and their first Future Window Positive Interaction. "
+        f"Denominator: {_denominator_display(evaluation.cohort.size)}.</p>"
+        f"{_metrics_table(evaluation.retrievers.get('popularity'))}</section>\n"
+    )
+
+
 def _mode_comparison(evaluation: EvaluationReport, label: str) -> str:
     rows = ""
     comparisons: list[tuple[str, RetrieverEvaluation | None]] = [
@@ -218,6 +239,7 @@ def _mode_comparison(evaluation: EvaluationReport, label: str) -> str:
             f"<td>{metrics.conditional_recall_at_10:.4f}</td>"
             f"<td>{metrics.end_to_end_recall_at_10:.4f}</td>"
             f"<td>{metrics.ndcg_at_10:.4f}</td>"
+            f"<td>{_display_catalog_coverage(metrics.catalog_coverage_at_10)}</td>"
             "</tr>"
         )
     return (
@@ -228,6 +250,7 @@ def _mode_comparison(evaluation: EvaluationReport, label: str) -> str:
         f"Oracle headroom realized: {_headroom_text(evaluation)}.</p>"
         "<table><thead><tr><th>System</th><th>Coverage@200</th>"
         "<th>ConditionalRecall@10</th><th>EndToEndRecall@10</th><th>NDCG@10</th>"
+        "<th>CatalogCoverage@10</th>"
         f"</tr></thead><tbody>{rows}</tbody></table></section>\n"
     )
 
@@ -248,8 +271,13 @@ def _metrics_table(evaluation: RetrieverEvaluation | None) -> str:
         f"<tr><th>ConditionalRecall@10</th><td>{metrics.conditional_recall_at_10:.4f}</td></tr>"
         f"<tr><th>EndToEndRecall@10</th><td>{metrics.end_to_end_recall_at_10:.4f}</td></tr>"
         f"<tr><th>NDCG@10</th><td>{metrics.ndcg_at_10:.4f}</td></tr>"
+        f"<tr><th>CatalogCoverage@10</th><td>{_display_catalog_coverage(metrics.catalog_coverage_at_10)}</td></tr>"
         "</tbody></table>"
     )
+
+
+def _display_catalog_coverage(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.4f}"
 
 
 def _multivae_resource_section(artifact: ServingArtifact) -> str:
@@ -303,6 +331,18 @@ def write_rolling_report(
 
     aggregate_stages = [_aggregate_stage_payload(stage) for stage in stages]
     aggregate_benchmark = _aggregate_benchmark(latency_benchmark)
+    is_full_profile = (configuration or {}).get("profile") == "full"
+    data_description = "MovieLens 20M" if is_full_profile else "MovieLens-shaped fixture"
+    resource_description = (
+        "full MovieLens 20M lifecycle" if is_full_profile else "local fast fixture lifecycle"
+    )
+    dataset_limitation = (
+        "<li>The 20M results describe one local temporal replay and one deterministic cohort "
+        "selection, not a multi-seed confidence interval or an online experiment.</li>"
+        if is_full_profile
+        else "<li>This report uses the deterministic local fast fixture. Fixture numbers must "
+        "not be presented as MovieLens 20M results.</li>"
+    )
     embedded = {
         "schema_version": 2,
         "source_event_count": source_event_count,
@@ -350,7 +390,7 @@ def write_rolling_report(
         "<body>\n"
         '<section id="executive-summary" class="hero">'
         "<h1>Movie Recommender Lifecycle Showcase</h1>"
-        "<p>This local-first system turns chronologically replayed MovieLens-shaped Rating Events "
+        f"<p>This local-first system turns chronologically replayed {data_description} Rating Events "
         "into time-bounded snapshots, candidate retrievers, query-mode Learned Hybrid Fusion (LHF), "
         "an immutable CPU Serving Artifact, and a FastAPI recommendation path.</p>"
         '<div class="grid">'
@@ -401,6 +441,8 @@ def write_rolling_report(
         "is in the final Top-10; denominator is the full cohort.</li>"
         "<li><strong>NDCG@10:</strong> one-Gold discounted gain at the final rank, averaged over the "
         "full cohort.</li>"
+        "<li><strong>CatalogCoverage@10:</strong> distinct Top-10 Movies across the cohort divided "
+        "by the snapshot Candidate Catalog size.</li>"
         "<li><strong>Oracle headroom:</strong> LHF coverage gained over the validation-selected best "
         "single retriever divided by the remaining best-single-to-Oracle-Union coverage gap. A zero "
         "denominator is undefined, not zero.</li></ul>"
@@ -410,11 +452,12 @@ def write_rolling_report(
         f"{_quality_section(_mode_evaluation(aggregate_stages, 'known_user'), 'Known-User', 'quality-known-user')}"
         f"{_quality_section(_mode_evaluation(aggregate_stages, 'history_only'), 'History-Only', 'quality-history-only')}"
         f"{_cold_user_section(aggregate_stages)}"
+        f"{_empty_history_section(aggregate_stages)}"
         '<section id="retrieval-bottleneck"><h2>Retrieval bottleneck and fusion diagnosis</h2>'
         f"{_retrieval_diagnosis(aggregate_stages)}</section>\n"
         '<section id="resource-device-timing"><h2>Resource, device, and timing evidence</h2>'
         "<p>Neural training records the actual device and fallback reason. Serving is CPU-only; "
-        "these timings describe the local fast fixture lifecycle, not production capacity.</p>"
+        f"these timings describe the {resource_description}, not production capacity.</p>"
         f"<table><thead><tr><th>Stage</th><th>Mult-VAE</th><th>LightGCN</th><th>Training s</th>"
         f"<th>Export s</th><th>Smoke s</th><th>Evaluation s</th></tr></thead><tbody>{_resource_rows(aggregate_stages)}"
         "</tbody></table></section>\n"
@@ -423,16 +466,13 @@ def write_rolling_report(
         '<section id="limitations"><h2>Limitations and honest interpretation</h2>'
         "<ul><li>Collaborative retrievers do not solve Interaction-New Movies: a movie without "
         "snapshot interaction evidence is not made recommendable by this system.</li>"
-        "<li>This report is produced from the deterministic local fast fixture. The repository does "
-        "not yet contain a pipeline that downloads and runs the full MovieLens 20M dataset; fixture "
-        "numbers must not be presented as 20M results.</li>"
-        "<li>Empty-History is deliberately routed to Popularity. Its quality is not measured here: the "
-        "prequential cohort requires a non-empty snapshot history, and no counterfactual empty-user "
-        "gold protocol is invented.</li>"
+        f"{dataset_limitation}"
+        "<li>Empty-History quality uses new Subjects in the Future Window; zero eligible Subjects "
+        "are shown as n/a with denominator 0.</li>"
         "<li>LHF can be worse than a baseline. The report exposes the measured comparison and does not "
         "turn a non-uplift into an improvement claim.</li>"
         "<li>Latency evidence is an in-process ASGI request-path measurement, not loopback/network "
-        "latency. It is a local fixture benchmark rather than a capacity or load test.</li></ul></section>\n"
+        "latency. It is a local benchmark rather than a capacity or load test.</li></ul></section>\n"
         '<section id="provenance"><h2>Provenance</h2>'
         f"{_provenance_section(aggregate_stages, embedded)}</section>\n"
         f'<script id="embedded-report-data" type="application/json">{data_json}</script>\n'
@@ -446,6 +486,7 @@ _REPORT_METRICS = (
     "ConditionalRecall@10",
     "EndToEndRecall@10",
     "NDCG@10",
+    "CatalogCoverage@10",
 )
 _REPORT_SEGMENTS = ("1-4", "5-19", "20+")
 
@@ -519,9 +560,9 @@ def _aggregate_stage_evaluation(value: object) -> dict[str, object] | None:
     raw = _mapping(value)
     if not raw:
         return None
-    if any(mode in raw for mode in ("known_user", "history_only")):
+    if any(mode in raw for mode in ("known_user", "history_only", "empty_history")):
         result: dict[str, object] = {}
-        for mode in ("known_user", "history_only"):
+        for mode in ("known_user", "history_only", "empty_history"):
             evaluation = _aggregate_evaluation(raw.get(mode))
             if evaluation is not None:
                 result[mode] = evaluation
@@ -757,7 +798,7 @@ def _quality_section(
         "is the covered subset.</p>"
         "<table><thead><tr><th>System</th><th>Cohort / denominator</th>"
         "<th>Coverage@200</th><th>ConditionalRecall@10</th><th>EndToEndRecall@10</th>"
-        f"<th>NDCG@10</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
+        f"<th>NDCG@10</th><th>CatalogCoverage@10</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
         f"<p>Oracle headroom realized: <strong>{html.escape(headroom)}</strong>; "
         f"Gold Candidates outside the Oracle Union: <strong>{_display(failures)}</strong> retrieval "
         "failures.</p></section>\n"
@@ -775,6 +816,7 @@ def _quality_row(name: str, value: object) -> str:
         f"<td>{_metric_value(metrics, 'ConditionalRecall@10')}</td>"
         f"<td>{_metric_value(metrics, 'EndToEndRecall@10')}</td>"
         f"<td>{_metric_value(metrics, 'NDCG@10')}</td>"
+        f"<td>{_metric_value(metrics, 'CatalogCoverage@10')}</td>"
         "</tr>"
     )
 
@@ -791,10 +833,25 @@ def _cold_user_section(stages: Sequence[Mapping[str, Any]]) -> str:
         f"{_segment_table(known)}"
         "<h3>History-Only segments</h3>"
         f"{_segment_table(history)}"
-        "<p><strong>Empty-History:</strong> Popularity is the defined fallback. Empty-History quality "
-        "is not measured in this protocol: the prequential gold cohort is built from Subjects with "
-        "snapshot history, so the report records no Empty-History cohort or denominator rather than "
-        "manufacturing a zero.</p></section>\n"
+        "</section>\n"
+    )
+
+
+def _empty_history_section(stages: Sequence[Mapping[str, Any]]) -> str:
+    evaluation = _mode_evaluation(stages, "empty_history")
+    if evaluation is None:
+        return '<section id="quality-empty-history"><h2>Empty-History quality</h2><p>n/a</p></section>\n'
+    cohort = _integer(evaluation.get("cohort_size"))
+    return (
+        '<section id="quality-empty-history"><h2>Empty-History quality</h2>'
+        "<p>Popularity fallback only. Gold Candidate is the first Positive Interaction in the "
+        "Future Window for a Subject with no Positive Interactions in the Data Snapshot. "
+        f"Cohort / denominator: <strong>{_denominator_display(cohort)}</strong>.</p>"
+        "<table><thead><tr><th>System</th><th>Cohort / denominator</th><th>Coverage@200</th>"
+        "<th>ConditionalRecall@10</th><th>EndToEndRecall@10</th><th>NDCG@10</th>"
+        "<th>CatalogCoverage@10</th></tr></thead><tbody>"
+        f"{_quality_row('Popularity fallback', evaluation.get('best_single'))}"
+        "</tbody></table></section>\n"
     )
 
 

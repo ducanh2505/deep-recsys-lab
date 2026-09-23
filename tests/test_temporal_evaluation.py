@@ -48,6 +48,50 @@ def test_cohort_uses_first_future_positive_and_snapshot_history_only() -> None:
     assert cohort.queries[0].gold_movie_id == 12
 
 
+def test_cohort_cap_selects_same_deterministic_subjects_for_both_query_modes() -> None:
+    snapshot = DataSnapshot.from_events(
+        tuple(RatingEvent.from_movielens(subject, 10, 5.0, subject) for subject in range(1, 8))
+    )
+    future = tuple(
+        RatingEvent.from_movielens(subject, 11, 5.0, subject + 10)
+        for subject in range(1, 8)
+    )
+
+    known = build_evaluation_cohort(snapshot, future, max_subjects=3, seed=42)
+    history = build_evaluation_cohort(
+        snapshot, future, query_mode="history_only", max_subjects=3, seed=42
+    )
+
+    assert known.size == history.size == 3
+    assert len({query.subject_id for query in known}) == 3
+    assert tuple(query.gold_event_id for query in known) == tuple(
+        query.gold_event_id for query in history
+    )
+
+
+def test_empty_history_cohort_uses_new_subject_first_future_positive() -> None:
+    snapshot = DataSnapshot.from_events(
+        (
+            RatingEvent.from_movielens(1, 10, 5.0, 1),
+            RatingEvent.from_movielens(2, 10, 2.0, 2),
+        )
+    )
+    future = (
+        RatingEvent.from_movielens(1, 11, 5.0, 3),
+        RatingEvent.from_movielens(2, 12, 3.0, 4),
+        RatingEvent.from_movielens(2, 13, 5.0, 5),
+        RatingEvent.from_movielens(3, 14, 5.0, 6),
+        RatingEvent.from_movielens(2, 15, 5.0, 7),
+    )
+
+    cohort = build_evaluation_cohort(snapshot, future, query_mode="empty_history")
+
+    assert cohort.size == 2
+    assert all(query.subject_id is None and query.history == () for query in cohort)
+    assert [query.gold_movie_id for query in cohort] == [13, 14]
+    assert len({query.pool_key for query in cohort}) == 2
+
+
 def test_fast_lifecycle_reports_the_temporal_evaluation_stage(tmp_path: Path) -> None:
     result = run_fast_lifecycle(tmp_path / "fast", kafka=InMemoryKafkaBoundary())
 

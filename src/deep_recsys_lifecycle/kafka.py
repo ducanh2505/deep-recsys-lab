@@ -76,14 +76,21 @@ class ConfluentKafkaBoundary:
                 delivery_errors.append(str(error))
 
         for event in events:
-            producer.produce(
-                topic=topic,
-                key=event.event_id,
-                value=json.dumps(event.to_dict(), sort_keys=True),
-                callback=delivery_callback,
-            )
+            payload = json.dumps(event.to_dict(), sort_keys=True)
+            while True:
+                try:
+                    producer.produce(
+                        topic=topic,
+                        key=event.event_id,
+                        value=payload,
+                        callback=delivery_callback,
+                    )
+                    break
+                except BufferError:
+                    producer.poll(1.0)
+            producer.poll(0)
 
-        remaining = producer.flush(30.0)
+        remaining = producer.flush(300.0)
         if remaining:
             raise TimeoutError(f"Kafka producer still has {remaining} message(s) in flight")
         if delivery_errors:

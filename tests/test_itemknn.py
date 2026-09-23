@@ -1,8 +1,11 @@
+import pytest
+
 from deep_recsys_lifecycle.event_store import DataSnapshot
 from deep_recsys_lifecycle.itemknn import fit_itemknn
 from deep_recsys_lifecycle.models import RatingEvent
 from deep_recsys_lifecycle.positive import derive_positive_interactions
 from deep_recsys_lifecycle.serving import ItemKNNRetriever
+from deep_recsys_lifecycle.sparse_scoring import SparseItemKNNScorer
 
 
 def _snapshot() -> DataSnapshot:
@@ -55,3 +58,21 @@ def test_itemknn_cpu_serving_payload_round_trip_and_corruption_rejection() -> No
         assert "duplicate" in str(error)
     else:
         raise AssertionError("corrupt ItemKNN payload was accepted")
+
+
+def test_sparse_itemknn_scoring_matches_binary_cosine_contract() -> None:
+    snapshot = _snapshot()
+    serving = fit_itemknn(snapshot, derive_positive_interactions(snapshot.events)).to_serving()
+    scorer = SparseItemKNNScorer(
+        serving.catalog, serving.item_subjects, serving.subject_histories
+    )
+
+    for history in ((1,), (1, 2), (1, 2, 3), (999,)):
+        expected = serving.candidate_pool(history, limit=4)
+        actual = scorer.candidate_pool(history, limit=4)
+        assert [candidate.movie_id for candidate in actual] == [
+            candidate.movie_id for candidate in expected
+        ]
+        assert [candidate.score for candidate in actual] == pytest.approx([
+            candidate.score for candidate in expected
+        ])

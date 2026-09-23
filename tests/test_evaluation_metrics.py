@@ -46,6 +46,24 @@ def test_metrics_match_a_hand_checkable_candidate_pool_fixture() -> None:
     assert math.isclose(metrics.ndcg_at_10, (1 / math.log2(3) + 1) / 3)
 
 
+def test_catalog_coverage_counts_distinct_top_ten_movies_over_snapshot_catalog() -> None:
+    cohort = EvaluationCohort(
+        queries=(
+            EvaluationQuery(subject_id=1, history=(10,), gold_movie_id=3),
+            EvaluationQuery(subject_id=2, history=(11,), gold_movie_id=4),
+        )
+    )
+    pools = {
+        1: (Candidate(movie_id=10, score=3, rank=1), Candidate(movie_id=3, score=2, rank=2)),
+        2: (Candidate(movie_id=3, score=3, rank=1), Candidate(movie_id=4, score=2, rank=2)),
+    }
+
+    metrics = compute_metrics(cohort, pools, candidate_catalog={3, 4, 10, 11, 12})
+
+    assert metrics.catalog_coverage_at_10 == 2 / 5
+    assert metrics.to_dict()["CatalogCoverage@10"] == 2 / 5
+
+
 def test_conditional_recall_is_explicitly_zero_when_no_query_is_covered() -> None:
     cohort = EvaluationCohort(
         queries=(EvaluationQuery(subject_id=1, history=(), gold_movie_id=99),)

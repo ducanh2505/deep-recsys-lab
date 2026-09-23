@@ -51,6 +51,7 @@ class FastLifecycleResult:
     temporal_split: TemporalSplit
     evaluation: EvaluationReport
     history_only_evaluation: EvaluationReport
+    empty_history_evaluation: EvaluationReport
     inner_validation_snapshot_fingerprint: str
     inner_validation_event_ids: tuple[str, ...]
     multivae: MultVAERetriever
@@ -149,19 +150,26 @@ def run_fast_lifecycle(
         inner_snapshot,
         inner_split.future_window_events,
         query_mode="known_user",
+        max_subjects=1_000,
+        seed=random_seed,
     )
     inner_history_cohort = build_evaluation_cohort(
         inner_snapshot,
         inner_split.future_window_events,
         query_mode="history_only",
+        max_subjects=1_000,
+        seed=random_seed,
     )
+    inner_catalog = {event.movie_id for event in inner_snapshot.events}
     inner_known_base = evaluate_retrievers(
         inner_retrievers,
         inner_known_cohort,
+        candidate_catalog=inner_catalog,
     )
     inner_history_base = evaluate_retrievers(
         {name: inner_retrievers[name] for name in FUSION_BANKS["history_only"]},
         inner_history_cohort,
+        candidate_catalog=inner_catalog,
     )
     inner_known_builder = FusionFeatureBuilder.from_snapshot(
         inner_snapshot,
@@ -226,7 +234,10 @@ def run_fast_lifecycle(
         mps_probe=lightgcn_mps_probe,
         device_benchmark=lightgcn_device_benchmark,
     )
-    cohort = build_evaluation_cohort(data_snapshot, temporal_split.future_window_events)
+    cohort = build_evaluation_cohort(
+        data_snapshot, temporal_split.future_window_events,
+        max_subjects=1_000, seed=random_seed,
+    )
     retrievers: dict[str, CandidateRetriever] = {
         "popularity": popularity,
         "itemknn": itemknn,
@@ -241,18 +252,29 @@ def run_fast_lifecycle(
         data_snapshot,
         temporal_split.future_window_events,
         query_mode="history_only",
+        max_subjects=1_000,
+        seed=random_seed,
+    )
+    empty_history_cohort = build_evaluation_cohort(
+        data_snapshot,
+        temporal_split.future_window_events,
+        query_mode="empty_history",
+        max_subjects=1_000,
+        seed=random_seed,
     )
     known_base_evaluation = evaluate_retrievers(
         retrievers,
         evaluation_cohort,
         selected_best_single_name=inner_known_base.best_single_name,
         best_single_source="inner_validation",
+        candidate_catalog=popularity.catalog,
     )
     history_base_evaluation = evaluate_retrievers(
         history_retrievers,
         history_only_cohort,
         selected_best_single_name=inner_history_base.best_single_name,
         best_single_source="inner_validation",
+        candidate_catalog=popularity.catalog,
     )
     full_known_builder = FusionFeatureBuilder.from_snapshot(
         data_snapshot,
@@ -280,6 +302,7 @@ def run_fast_lifecycle(
         selected_best_single_name=inner_known_base.best_single_name,
         best_single_source="inner_validation",
         lhf_pools=known_lhf_pools,
+        candidate_catalog=popularity.catalog,
     )
     history_only_evaluation = evaluate_retrievers(
         history_retrievers,
@@ -287,6 +310,14 @@ def run_fast_lifecycle(
         selected_best_single_name=inner_history_base.best_single_name,
         best_single_source="inner_validation",
         lhf_pools=history_lhf_pools,
+        candidate_catalog=popularity.catalog,
+    )
+    empty_history_evaluation = evaluate_retrievers(
+        {"popularity": popularity},
+        empty_history_cohort,
+        selected_best_single_name="popularity",
+        best_single_source="defined_fallback",
+        candidate_catalog=popularity.catalog,
     )
     training_seconds = monotonic() - training_started
     evaluation_metrics: dict[str, Any] = {
@@ -300,6 +331,7 @@ def run_fast_lifecycle(
     )
     evaluation_metrics["known_user"] = _evaluation_summary(evaluation)
     evaluation_metrics["history_only"] = _evaluation_summary(history_only_evaluation)
+    evaluation_metrics["empty_history"] = _evaluation_summary(empty_history_evaluation)
 
     staging_path = artifact_store.new_staging_path()
     try:
@@ -348,6 +380,7 @@ def run_fast_lifecycle(
         temporal_split=temporal_split,
         evaluation=evaluation,
         history_only_evaluation=history_only_evaluation,
+        empty_history_evaluation=empty_history_evaluation,
     )
     return FastLifecycleResult(
         output_dir=output_dir,
@@ -366,6 +399,7 @@ def run_fast_lifecycle(
         temporal_split=temporal_split,
         evaluation=evaluation,
         history_only_evaluation=history_only_evaluation,
+        empty_history_evaluation=empty_history_evaluation,
         inner_validation_snapshot_fingerprint=inner_snapshot.fingerprint,
         inner_validation_event_ids=inner_validation_event_ids,
         multivae=multivae,

@@ -113,6 +113,10 @@ is moved to `.rolling-quarantine/` and rebuilt without changing completed stage 
 The stage 50% LHF is trained from inner validation wholly inside the 50% snapshot. Later LHF
 stages can use persisted validation rows/outcomes from earlier completed stages; their feature
 vectors and candidate pools are retained from the snapshot/model that produced those outcomes.
+For the full profile, each Query persists every positive fusion row and the configured
+deterministic negative-row budget; the multi-million-row candidate pools are evaluated in memory
+and omitted from the checkpoint. The evaluation record retains aggregate metrics, selected rows,
+cohort provenance, Future Window event count, and an event-ID digest.
 The current Future Window is never used to train or select the current stage model. Stages 50–90
 are published but are not active serving artifacts. Only the 100% artifact can replace the active
 pointer, and activation happens after its smoke tests; a failure leaves the previous pointer
@@ -131,6 +135,7 @@ samples. It records runtime-confirmed OS/CPU/Python evidence, percentile method,
 counts, p50/p95/p99, throughput, and each mode's SLO status. A failed or incomplete benchmark is
 rendered as failed/not measured and never changes an immutable stage artifact.
 
-This is a local checkpoint/resume mechanism only. It does not add a database, distributed
-scheduler, multi-host lock, model registry, MovieLens 20M download, Kubernetes deployment, public
+This is a local checkpoint/resume mechanism only. DuckDB provides bounded local analytical reads;
+the project does not add an external database, distributed
+scheduler, multi-host lock, model registry, Kubernetes deployment, public
 hosting, frontend app, or interactive dashboard.

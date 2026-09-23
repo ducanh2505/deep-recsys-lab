@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -44,7 +45,8 @@ from .itemknn import fit_itemknn
 from .kafka import KafkaBoundary
 from .lightgcn import LightGCNConfig, fit_lightgcn
 from .models import RatingEvent
-from .multivae import fit_multivae
+from .movielens import MovieLens20MSource
+from .multivae import MultVAEConfig, fit_multivae
 from .popularity import fit_popularity
 from .positive import derive_positive_interactions
 from .report import write_rolling_report
@@ -121,6 +123,10 @@ def run_rolling_lifecycle(
     source_revision: str | None = None,
     smoke_validator: Callable[[ServingArtifact], None] | None = None,
     random_seed: int = 42,
+    evaluation_cohort_limit: int = 1_000,
+    fusion_negative_rows_per_query: int | None = None,
+    multivae_config: MultVAEConfig | None = None,
+    multivae_device_preference: str = "cpu",
     lightgcn_config: LightGCNConfig | None = None,
     lightgcn_device_preference: str = "cpu",
     phase_observer: PhaseObserver | None = None,
@@ -134,18 +140,42 @@ def run_rolling_lifecycle(
 
     if lightgcn_device_preference not in {"cpu", "auto", "mps"}:
         raise ValueError("lightgcn_device_preference must be one of: cpu, auto, mps")
-    raw_events = tuple(source_events) if source_events is not None else load_movielens_fixture()
-    ordered_events = _canonical_source_events(raw_events)
+    if multivae_device_preference not in {"cpu", "auto", "mps"}:
+        raise ValueError("multivae_device_preference must be one of: cpu, auto, mps")
+    if isinstance(evaluation_cohort_limit, bool) or evaluation_cohort_limit < 1:
+        raise ValueError("evaluation_cohort_limit must be positive")
+    if fusion_negative_rows_per_query is not None and (
+        isinstance(fusion_negative_rows_per_query, bool)
+        or fusion_negative_rows_per_query < 1
+    ):
+        raise ValueError("fusion_negative_rows_per_query must be positive")
+    full_source = isinstance(source_events, MovieLens20MSource)
+    ordered_events: Sequence[RatingEvent]
+    if isinstance(source_events, MovieLens20MSource):
+        ordered_events = source_events
+    else:
+        raw_events = tuple(source_events) if source_events is not None else load_movielens_fixture()
+        ordered_events = _canonical_source_events(raw_events)
     if not ordered_events:
         raise ValueError("the rolling lifecycle needs at least one source Rating Event")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     artifact_store = ArtifactStore(output_dir)
-    source_checksum = deterministic_dataset_checksum(ordered_events)
+    source_checksum = (
+        source_events.dataset_checksum
+        if isinstance(source_events, MovieLens20MSource)
+        else deterministic_dataset_checksum(ordered_events)
+    )
     resolved_revision = source_revision or resolve_source_revision()
     resolved_lightgcn_config = lightgcn_config or LightGCNConfig(seed=random_seed)
+    resolved_multivae_config = multivae_config or MultVAEConfig()
     configuration = _rolling_configuration(
+        profile="full" if full_source else "rolling",
         random_seed=random_seed,
+        evaluation_cohort_limit=evaluation_cohort_limit,
+        fusion_negative_rows_per_query=fusion_negative_rows_per_query,
+        multivae_config=resolved_multivae_config,
+        multivae_device_preference=multivae_device_preference,
         lightgcn_config=resolved_lightgcn_config,
         lightgcn_device_preference=lightgcn_device_preference,
     )
@@ -203,6 +233,9 @@ def run_rolling_lifecycle(
             percentage,
             allow_ahead=repairing_after_downstream,
         )
+        target_count = expected_snapshot.event_count
+        if full_source:
+            del expected_snapshot
         _observe(
             phase_observer,
             "ingest_initial" if percentage == 50 else "ingest_stage",
@@ -215,7 +248,7 @@ def run_rolling_lifecycle(
                 group_id=kafka_group,
                 event_store=event_store,
                 source_events=ordered_events,
-                target_count=expected_snapshot.event_count,
+                target_count=target_count,
             )
         snapshot = _snapshot_prefix_from_store(event_store, ordered_events, percentage)
         _write_stage_snapshot(output_dir, percentage, snapshot)
@@ -226,6 +259,8 @@ def run_rolling_lifecycle(
             snapshot,
             interactions,
             random_seed=random_seed,
+            multivae_config=resolved_multivae_config,
+            multivae_device_preference=multivae_device_preference,
             lightgcn_config=resolved_lightgcn_config,
             lightgcn_device_preference=lightgcn_device_preference,
         )
@@ -235,6 +270,10 @@ def run_rolling_lifecycle(
             snapshot=snapshot,
             interactions=interactions,
             random_seed=random_seed,
+            evaluation_cohort_limit=evaluation_cohort_limit,
+            fusion_negative_rows_per_query=fusion_negative_rows_per_query,
+            multivae_config=resolved_multivae_config,
+            multivae_device_preference=multivae_device_preference,
             lightgcn_config=resolved_lightgcn_config,
             lightgcn_device_preference=lightgcn_device_preference,
             prior_rows=prior_rows,
@@ -271,6 +310,7 @@ def run_rolling_lifecycle(
             snapshot=snapshot,
             interactions=interactions,
             source_events=ordered_events,
+            source_checksum=source_checksum,
             random_seed=random_seed,
             source_revision=resolved_revision,
             training_seconds=training_seconds,
@@ -293,6 +333,9 @@ def run_rolling_lifecycle(
                 snapshot=snapshot,
                 future_events=future_events,
                 best_single_names=best_single_names,
+                evaluation_cohort_limit=evaluation_cohort_limit,
+                fusion_negative_rows_per_query=fusion_negative_rows_per_query,
+                random_seed=random_seed,
             )
             evaluation_record["evaluation_seconds"] = monotonic() - evaluation_started
             evaluation_path, evaluation_sha256 = _write_evaluation_record(
@@ -336,12 +379,19 @@ def run_rolling_lifecycle(
         )
         completed_stage = _CompletedStage(
             record=stage_record,
-            artifact=artifact,
+            artifact=None,
             manifest=artifact.manifest,
             evaluation_record=evaluation_record,
         )
         completed[percentage] = completed_stage
         stage_results.append(_stage_result_from_record(stage_record, output_dir))
+
+        if full_source:
+            del retrievers, fusions, interactions, snapshot, artifact
+            del prior_rows, prior_sources, prior_best
+            if percentage < 100:
+                del future_events
+            gc.collect()
 
         if percentage < 100 and not repairing_after_downstream:
             _observe(phase_observer, "ingest_next", percentage)
@@ -420,18 +470,27 @@ def _canonical_source_events(events: Iterable[RatingEvent]) -> tuple[RatingEvent
 
 def _rolling_configuration(
     *,
+    profile: str,
     random_seed: int,
+    evaluation_cohort_limit: int,
+    fusion_negative_rows_per_query: int | None,
+    multivae_config: MultVAEConfig,
+    multivae_device_preference: str,
     lightgcn_config: LightGCNConfig,
     lightgcn_device_preference: str,
 ) -> dict[str, Any]:
     if not isinstance(random_seed, int) or isinstance(random_seed, bool):
         raise ValueError("rolling random_seed must be an integer")
     return {
-        "profile": "rolling",
+        "profile": profile,
         "stage_percentages": list(ROLLING_STAGES),
         "future_window_percentage": 10,
         "implicit_signal_threshold": 4.0,
         "random_seed": random_seed,
+        "evaluation_cohort_limit": evaluation_cohort_limit,
+        "fusion_negative_rows_per_query": fusion_negative_rows_per_query,
+        "multivae_device_preference": multivae_device_preference,
+        "multivae_config": multivae_config.to_dict(),
         "lightgcn_device_preference": lightgcn_device_preference,
         "lightgcn_config": lightgcn_config.to_dict(),
     }
@@ -776,8 +835,18 @@ def _validate_evaluation_record(
     ):
         raise RollingLifecycleError("stage evaluation record has invalid provenance")
     boundary = record.get("future_window")
-    expected_ids = [event.event_id for event in future_events]
-    if not isinstance(boundary, Mapping) or boundary.get("event_ids") != expected_ids:
+    if not isinstance(boundary, Mapping):
+        raise RollingLifecycleError("stage evaluation record has an invalid Future Window")
+    if "event_ids_sha256" in boundary:
+        valid_window = (
+            boundary.get("event_count") == len(future_events)
+            and boundary.get("event_ids_sha256") == _event_ids_sha256(future_events)
+        )
+    else:
+        valid_window = boundary.get("event_ids") == [
+            event.event_id for event in future_events
+        ]
+    if not valid_window:
         raise RollingLifecycleError("stage evaluation record has an invalid Future Window")
     rows = record.get("validation_rows")
     if not isinstance(rows, Mapping) or not isinstance(rows.get("known_user"), list):
@@ -847,6 +916,23 @@ def _ensure_snapshot_prefix_not_ahead(
     *,
     allow_ahead: bool = False,
 ) -> None:
+    if isinstance(ordered_events, MovieLens20MSource):
+        actual_ids = set(store.iter_event_ids())
+        if allow_ahead:
+            unmatched = actual_ids.copy()
+            for event in ordered_events:
+                unmatched.discard(event.event_id)
+            if unmatched:
+                raise RollingLifecycleError(
+                    "Event Store contains a Rating Event outside the source dataset"
+                )
+        else:
+            expected_ids = {event.event_id for event in expected_snapshot.events}
+            if not actual_ids <= expected_ids:
+                raise RollingLifecycleError(
+                    f"Future Window for stage {percentage}% was ingested before its evaluation"
+                )
+        return
     actual_ids = {event.event_id for event in store.materialize_snapshot().events}
     expected_ids = {event.event_id for event in expected_snapshot.events}
     source_ids = {event.event_id for event in ordered_events}
@@ -869,6 +955,31 @@ def _ensure_ingested_prefix(
     source_events: Sequence[RatingEvent],
     target_count: int,
 ) -> None:
+    if isinstance(source_events, MovieLens20MSource):
+        current_ids = set(event_store.iter_event_ids())
+        unmatched_ids = current_ids.copy()
+        for index in range(target_count):
+            unmatched_ids.discard(source_events[index].event_id)
+        if unmatched_ids:
+            raise RollingLifecycleError("Event Store is ahead of the requested rolling boundary")
+        del unmatched_ids
+        pending: list[RatingEvent] = []
+        for index in range(target_count):
+            event = source_events[index]
+            if event.event_id not in current_ids:
+                pending.append(event)
+            if len(pending) == 50_000:
+                kafka.publish(topic, pending)
+                kafka.consume_to_store(
+                    topic, group_id, len(pending), event_store, timeout_seconds=300.0
+                )
+                pending = []
+        if pending:
+            kafka.publish(topic, pending)
+            kafka.consume_to_store(
+                topic, group_id, len(pending), event_store, timeout_seconds=300.0
+            )
+        return
     target_events = tuple(source_events[:target_count])
     current = event_store.materialize_snapshot()
     current_ids = {event.event_id for event in current.events}
@@ -903,6 +1014,17 @@ def _snapshot_prefix_from_store(
     source_events: Sequence[RatingEvent],
     percentage: int,
 ) -> DataSnapshot:
+    if isinstance(source_events, MovieLens20MSource):
+        actual = store.materialize_snapshot()
+        target_count = len(source_events) * percentage // 100
+        if actual.event_count != target_count:
+            raise RollingLifecycleError("materialized stage snapshot has the wrong event count")
+        for index, event in enumerate(actual.events):
+            if event.event_id != source_events[index].event_id:
+                raise RollingLifecycleError(
+                    "Event Store is missing a source event at the stage boundary"
+                )
+        return actual
     expected = _snapshot_for_percentage(source_events, percentage)
     actual = store.materialize_snapshot()
     actual_by_id = {event.event_id: event for event in actual.events}
@@ -957,6 +1079,8 @@ def _fit_retrievers(
     interactions: Sequence[Any],
     *,
     random_seed: int,
+    multivae_config: MultVAEConfig,
+    multivae_device_preference: str,
     lightgcn_config: LightGCNConfig,
     lightgcn_device_preference: str,
 ) -> dict[str, CandidateRetriever]:
@@ -966,8 +1090,9 @@ def _fit_retrievers(
         "multivae": fit_multivae(
             snapshot,
             interactions,
+            config=multivae_config,
             seed=random_seed,
-            device_preference="cpu",
+            device_preference=multivae_device_preference,
         ),
         "lightgcn": fit_lightgcn(
             snapshot,
@@ -985,6 +1110,10 @@ def _fit_stage_fusions(
     snapshot: DataSnapshot,
     interactions: Sequence[Any],
     random_seed: int,
+    evaluation_cohort_limit: int,
+    fusion_negative_rows_per_query: int | None,
+    multivae_config: MultVAEConfig,
+    multivae_device_preference: str,
     lightgcn_config: LightGCNConfig,
     lightgcn_device_preference: str,
     prior_rows: Mapping[str, Sequence[FusionTrainingRow]],
@@ -1011,6 +1140,10 @@ def _fit_stage_fusions(
         inner_rows, inner_sources, inner_best = _build_inner_validation(
             snapshot=snapshot,
             random_seed=random_seed,
+            evaluation_cohort_limit=evaluation_cohort_limit,
+            fusion_negative_rows_per_query=fusion_negative_rows_per_query,
+            multivae_config=multivae_config,
+            multivae_device_preference=multivae_device_preference,
             lightgcn_config=lightgcn_config,
             lightgcn_device_preference=lightgcn_device_preference,
         )
@@ -1043,6 +1176,10 @@ def _build_inner_validation(
     *,
     snapshot: DataSnapshot,
     random_seed: int,
+    evaluation_cohort_limit: int,
+    fusion_negative_rows_per_query: int | None,
+    multivae_config: MultVAEConfig,
+    multivae_device_preference: str,
     lightgcn_config: LightGCNConfig,
     lightgcn_device_preference: str,
 ) -> tuple[
@@ -1077,6 +1214,8 @@ def _build_inner_validation(
             inner_snapshot,
             inner_interactions,
             random_seed=random_seed,
+            multivae_config=multivae_config,
+            multivae_device_preference=multivae_device_preference,
             lightgcn_config=lightgcn_config,
             lightgcn_device_preference=lightgcn_device_preference,
         )
@@ -1087,27 +1226,45 @@ def _build_inner_validation(
     sources: dict[str, tuple[Mapping[str, Any], ...]] = {}
     best: dict[str, str] = {}
     inner_future = inner_split.future_window_events
+    inner_catalog = {event.movie_id for event in inner_snapshot.events}
     for mode in FUSION_MODES:
         cohort = build_evaluation_cohort(
             inner_snapshot,
             inner_future,
             query_mode=mode,
+            max_subjects=evaluation_cohort_limit,
+            seed=random_seed,
         )
         bank_retrievers = {name: inner_retrievers[name] for name in FUSION_BANKS[mode]}
-        report = evaluate_retrievers(bank_retrievers, cohort)
+        report = evaluate_retrievers(
+            bank_retrievers, cohort,
+            candidate_catalog=inner_catalog,
+        )
         builder = FusionFeatureBuilder.from_snapshot(
             inner_snapshot,
             inner_interactions,
             retriever_bank=FUSION_BANKS[mode],
         )
-        rows[mode] = build_lhf_training_rows(cohort, _training_pools(report), builder)
+        rows[mode] = build_lhf_training_rows(
+            cohort,
+            _training_pools(report),
+            builder,
+            max_negative_rows_per_query=fusion_negative_rows_per_query,
+            seed=random_seed,
+        )
         source = {
             "source_stage_percentage": 50,
             "validation_kind": "inner_snapshot",
             "snapshot_fingerprint": inner_snapshot.fingerprint,
             "future_window_start_percentage": 80,
             "future_window_end_percentage": 100,
-            "future_window_event_ids": [event.event_id for event in inner_future],
+            "future_window_event_ids": [
+                query.gold_event_id for query in cohort
+            ] if snapshot.event_count > 100_000 else [
+                event.event_id for event in inner_future
+            ],
+            "future_window_event_ids_sha256": _event_ids_sha256(inner_future),
+            "future_window_event_count": len(inner_future),
             "row_count": len(rows[mode]),
         }
         sources[mode] = (source,)
@@ -1187,6 +1344,14 @@ def _source_event_ids(sources: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _event_ids_sha256(events: Sequence[RatingEvent]) -> str:
+    digest = sha256()
+    for event in events:
+        digest.update(event.event_id.encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def _fusion_sources(fusions: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     sources: list[Mapping[str, Any]] = []
     for fusion in fusions.values():
@@ -1219,7 +1384,7 @@ def _stage_configuration(
     validation_sources: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     return {
-        "profile": "rolling",
+        "profile": configuration["profile"],
         "future_percentage": percentage + 10 if percentage < 100 else 100,
         "stage_percentage": percentage,
         "stage_percentages": list(ROLLING_STAGES),
@@ -1245,6 +1410,7 @@ def _export_stage_artifact(
     snapshot: DataSnapshot,
     interactions: Sequence[Any],
     source_events: Sequence[RatingEvent],
+    source_checksum: str,
     random_seed: int,
     source_revision: str,
     training_seconds: float,
@@ -1272,6 +1438,8 @@ def _export_stage_artifact(
             snapshot=snapshot,
             interactions=tuple(interactions),
             source_events=source_events,
+            source_dataset_checksum=source_checksum,
+            source_event_count=len(source_events),
             lifecycle_stage=f"rolling-{percentage}",
             data_cutoff_percentage=percentage,
             random_seed=random_seed,
@@ -1287,11 +1455,17 @@ def _export_stage_artifact(
             manifest_metadata=dict(manifest_metadata),
         )
         built.save()
+        if stage_configuration.get("profile") == "full":
+            del built
+            gc.collect()
         _observe(phase_observer, "export", percentage)
         staged = ServingArtifact.load(staging)
         smoke_started = monotonic()
         smoke_validator(staged)
         smoke_seconds = monotonic() - smoke_started
+        if stage_configuration.get("profile") == "full":
+            del staged
+            gc.collect()
         staged = artifact_store.update_staging_timings(staging, {"smoke": smoke_seconds})
         _observe(phase_observer, "smoke", percentage)
         final_path = artifact_store.root / staged.artifact_id
@@ -1302,6 +1476,11 @@ def _export_stage_artifact(
                 )
             _quarantine_path(final_path, artifact_store.root)
         published = artifact_store.publish(staging)
+        if stage_configuration.get("profile") == "full":
+            staged.path = published
+            if percentage == 100:
+                artifact_store._write_active_pointer(staged)
+            return published, staged
         loaded = artifact_store.load(published)
         if percentage == 100:
             artifact_store._activate_loaded(published)
@@ -1318,11 +1497,25 @@ def _evaluate_published_artifact(
     snapshot: DataSnapshot,
     future_events: Sequence[RatingEvent],
     best_single_names: Mapping[str, str],
+    evaluation_cohort_limit: int,
+    fusion_negative_rows_per_query: int | None,
+    random_seed: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    large_snapshot = snapshot.event_count > 100_000
     retrievers = _artifact_retrievers(artifact)
     interactions = derive_positive_interactions(snapshot.events)
-    known_cohort = build_evaluation_cohort(snapshot, future_events, query_mode="known_user")
-    history_cohort = build_evaluation_cohort(snapshot, future_events, query_mode="history_only")
+    known_cohort = build_evaluation_cohort(
+        snapshot, future_events, query_mode="known_user",
+        max_subjects=evaluation_cohort_limit, seed=random_seed,
+    )
+    history_cohort = build_evaluation_cohort(
+        snapshot, future_events, query_mode="history_only",
+        max_subjects=evaluation_cohort_limit, seed=random_seed,
+    )
+    empty_cohort = build_evaluation_cohort(
+        snapshot, future_events, query_mode="empty_history",
+        max_subjects=evaluation_cohort_limit, seed=random_seed,
+    )
     known_base = evaluate_retrievers(
         retrievers,
         known_cohort,
@@ -1330,6 +1523,7 @@ def _evaluate_published_artifact(
         best_single_source="inner_validation"
         if artifact.manifest["data_cutoff_percentage"] == 50
         else "prior_validation",
+        candidate_catalog=artifact.model.catalog,
     )
     history_retrievers = {name: retrievers[name] for name in FUSION_BANKS["history_only"]}
     history_base = evaluate_retrievers(
@@ -1339,6 +1533,7 @@ def _evaluate_published_artifact(
         best_single_source="inner_validation"
         if artifact.manifest["data_cutoff_percentage"] == 50
         else "prior_validation",
+        candidate_catalog=artifact.model.catalog,
     )
     known_builder = FusionFeatureBuilder.from_snapshot(
         snapshot, interactions, retriever_bank=FUSION_BANKS["known_user"]
@@ -1356,6 +1551,7 @@ def _evaluate_published_artifact(
         selected_best_single_name=known_base.best_single_name or "popularity",
         best_single_source=known_base.best_single_source,
         lhf_pools=known_lhf_pools,
+        candidate_catalog=artifact.model.catalog,
     )
     history = evaluate_retrievers(
         history_retrievers,
@@ -1363,21 +1559,46 @@ def _evaluate_published_artifact(
         selected_best_single_name=history_base.best_single_name or "popularity",
         best_single_source=history_base.best_single_source,
         lhf_pools=history_lhf_pools,
+        candidate_catalog=artifact.model.catalog,
+    )
+    empty = evaluate_retrievers(
+        {"popularity": artifact.model},
+        empty_cohort,
+        selected_best_single_name="popularity",
+        best_single_source="defined_fallback",
+        candidate_catalog=artifact.model.catalog,
     )
     known_validation_pools = _training_pools(known_base)
     history_validation_pools = _training_pools(history_base)
     validation_rows = {
         "known_user": _rows_to_dict(
-            build_lhf_training_rows(known_cohort, known_validation_pools, known_builder)
+            build_lhf_training_rows(
+                known_cohort,
+                known_validation_pools,
+                known_builder,
+                max_negative_rows_per_query=fusion_negative_rows_per_query,
+                seed=random_seed,
+            )
         ),
         "history_only": _rows_to_dict(
-            build_lhf_training_rows(history_cohort, history_validation_pools, history_builder)
+            build_lhf_training_rows(
+                history_cohort,
+                history_validation_pools,
+                history_builder,
+                max_negative_rows_per_query=fusion_negative_rows_per_query,
+                seed=random_seed,
+            )
         ),
     }
-    validation_pools = {
-        "known_user": _pools_to_dict(known_validation_pools),
-        "history_only": _pools_to_dict(history_validation_pools),
-    }
+    validation_pools = (
+        {"known_user": {}, "history_only": {}}
+        if large_snapshot
+        else {
+            "known_user": _pools_to_dict(known_validation_pools),
+            "history_only": _pools_to_dict(history_validation_pools),
+        }
+    )
+    future_window_digest = _event_ids_sha256(future_events)
     sources = {
         mode: [
             {
@@ -1387,7 +1608,11 @@ def _evaluate_published_artifact(
                 "future_window_start_percentage": int(artifact.manifest["data_cutoff_percentage"]),
                 "future_window_end_percentage": int(artifact.manifest["data_cutoff_percentage"])
                 + 10,
-                "future_window_event_ids": [event.event_id for event in future_events],
+                "future_window_event_ids": [
+                    query.gold_event_id for query in known_cohort
+                ] if large_snapshot else [event.event_id for event in future_events],
+                "future_window_event_ids_sha256": future_window_digest,
+                "future_window_event_count": len(future_events),
                 "row_count": len(validation_rows[mode]),
             }
         ]
@@ -1396,6 +1621,7 @@ def _evaluate_published_artifact(
     summary = {
         "known_user": _evaluation_summary(known),
         "history_only": _evaluation_summary(history),
+        "empty_history": _evaluation_summary(empty),
     }
     record = {
         "schema_version": 1,
@@ -1405,7 +1631,11 @@ def _evaluate_published_artifact(
             "start_percentage": int(artifact.manifest["data_cutoff_percentage"]),
             "end_percentage": int(artifact.manifest["data_cutoff_percentage"]) + 10,
             "event_count": len(future_events),
-            "event_ids": [event.event_id for event in future_events],
+            **(
+                {"event_ids_sha256": future_window_digest}
+                if large_snapshot
+                else {"event_ids": [event.event_id for event in future_events]}
+            ),
         },
         "evaluated_before_ingest": True,
         "best_single": {
@@ -1454,7 +1684,9 @@ def _evaluation_summary(report: EvaluationReport) -> dict[str, Any]:
             name: evaluation.metrics.to_dict() for name, evaluation in report.retrievers.items()
         },
         "rrf": report.rrf.metrics.to_dict(),
-        "history_segments": history_segment_metrics(report),
+        "history_segments": (
+            {} if report.query_mode == "empty_history" else history_segment_metrics(report)
+        ),
         "lhf": report.lhf.metrics.to_dict() if report.lhf else {},
     }
 

@@ -10,9 +10,12 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "confluent-kafka>=2.8,<3",
+    "duckdb>=1.4,<2",
     "fastapi>=0.115,<1",
     "lightgbm>=4.5,<5",
+    "numpy>=2,<3",
     "pyarrow>=18,<23",
+    "scipy>=1.14,<2",
     "torch>=2.5,<3",
     "typer>=0.15,<1",
     "uvicorn>=0.34,<1",

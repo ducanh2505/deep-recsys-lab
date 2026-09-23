@@ -58,8 +58,11 @@ evidence.
   `latency_benchmark.json`; the report keeps missing samples and failures visible.
 
 Downloaded MovieLens data and generated artifacts are never committed. The checked-in fixture is
-deliberately local and small; this repository does not yet provide a pipeline that runs the full
-MovieLens 20M dataset, so fixture numbers are not 20M results.
+deliberately local and small; its numbers must not be presented as 20M results. The `full`
+command downloads the [official MovieLens 20M archive](https://grouplens.org/datasets/movielens/20m/),
+verifies its published MD5, prepares a chronological DuckDB/Parquet source, and runs the same
+six-stage lifecycle. The dataset remains subject to the
+[GroupLens usage terms](https://files.grouplens.org/datasets/movielens/ml-20m-README.html).
 
 ## Reproduce the portfolio report from a clean checkout
 
@@ -180,8 +183,30 @@ quarantined and rebuilt; a source/configuration/code-revision mismatch fails ins
 runs. Kafka replay remains at-least-once and deterministic Event IDs keep duplicate evidence out
 of snapshots and training.
 
-The rolling showcase deliberately remains local and small: it does not download MovieLens 20M,
-add a database, distributed scheduler, multi-host lock, registry, Kubernetes deployment, public
-hosting, frontend app, or interactive dashboard. `fast` remains available for the original
-single-50% lifecycle smoke path; use `rolling` for the complete portfolio report and three-mode
-latency evidence.
+The rolling showcase deliberately remains local and small. `full` uses the official MovieLens
+archive and DuckDB; neither profile adds a distributed scheduler, multi-host lock, registry,
+Kubernetes deployment, public hosting, frontend app, or interactive dashboard. `fast` remains
+available for the original single-50% lifecycle smoke path; use `rolling` for the complete
+portfolio report and three-mode latency evidence.
+
+## Run the full MovieLens 20M profile
+
+The full command verifies all 20,000,263 source ratings, then replays them through Kafka in
+chronological batches. It keeps the same 50–100% snapshot/evaluation boundaries, caps each
+query-mode cohort at 5,000 deterministic Subjects, and trains both neural retrievers on **every**
+Positive Interaction at each stage. The full profile uses one epoch for each neural model,
+Mult-VAE batches of 256, and LightGCN batches of 65,536; these settings and any MPS fallback
+appear in artifact provenance. LHF retains every retrieved positive label and at most 20
+deterministically selected negative rows per validation Query. The source archive and generated
+files stay in ignored local directories. Allow substantial local time and disk space.
+
+```bash
+uv sync --dev
+docker compose up -d kafka
+uv run movie-recsys full --cache var/datasets --output artifacts/full
+open artifacts/full/report.html
+```
+
+`artifacts/full/rolling_checkpoint.json` records completed stages. Running the same command
+again validates and reuses completed stages when source, configuration, and code revision match.
+Stage 100 has no future-quality claim; the final quality result comes from the 90→100% window.

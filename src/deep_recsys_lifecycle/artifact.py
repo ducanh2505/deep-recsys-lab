@@ -71,21 +71,48 @@ def deterministic_dataset_checksum(events: Iterable[RatingEvent]) -> str:
 
 
 def resolve_source_revision(cwd: Path | None = None) -> str:
-    """Resolve the source revision without baking a repository-specific SHA into code."""
+    """Resolve HEAD and fingerprint uncommitted source state when the tree is dirty."""
 
+    working_dir = cwd or Path.cwd()
     try:
         completed = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=str(cwd) if cwd is not None else None,
+            cwd=str(working_dir),
             check=True,
             capture_output=True,
-            text=True,
             timeout=5,
         )
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD", "--"],
+            cwd=str(working_dir),
+            check=True,
+            capture_output=True,
+            timeout=5,
+        ).stdout
+        untracked = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=str(working_dir),
+            check=True,
+            capture_output=True,
+            timeout=5,
+        ).stdout.split(b"\0")
     except (OSError, subprocess.SubprocessError):
         return "unknown"
-    revision = completed.stdout.strip()
-    return revision or "unknown"
+    revision = completed.stdout.decode("ascii", errors="replace").strip()
+    if not revision:
+        return "unknown"
+    untracked_paths = sorted(path for path in untracked if path)
+    if not diff and not untracked_paths:
+        return revision
+    digest = hashlib.sha256(diff)
+    for raw_path in untracked_paths:
+        digest.update(b"\0")
+        digest.update(raw_path)
+        try:
+            digest.update((working_dir / raw_path.decode()).read_bytes())
+        except OSError:
+            digest.update(b"<unreadable>")
+    return f"{revision}-dirty-{digest.hexdigest()[:12]}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,6 +482,8 @@ class ServingArtifact:
         threshold: float = 4.0,
         *,
         source_events: Iterable[RatingEvent] | None = None,
+        source_dataset_checksum: str | None = None,
+        source_event_count: int | None = None,
         lifecycle_stage: str = "fast",
         data_cutoff_percentage: int = 50,
         configuration: Mapping[str, Any] | None = None,
@@ -489,7 +518,15 @@ class ServingArtifact:
         # Preserve the #36 top-level field as the CPU artifact/runtime device.  The actual
         # neural training device is recorded precisely in multivae_training.actual_device.
         resolved_training_device = training_device or "cpu"
-        source_event_values = tuple(source_events) if source_events is not None else snapshot.events
+        if source_dataset_checksum is None or source_event_count is None:
+            source_event_values = (
+                tuple(source_events) if source_events is not None else snapshot.events
+            )
+            resolved_dataset_checksum = deterministic_dataset_checksum(source_event_values)
+            resolved_source_event_count = len(source_event_values)
+        else:
+            resolved_dataset_checksum = source_dataset_checksum
+            resolved_source_event_count = source_event_count
         resolved_configuration = {
             "profile": "fast",
             "retriever": "popularity",
@@ -519,7 +556,7 @@ class ServingArtifact:
             "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
             "lifecycle_stage": lifecycle_stage,
             "data_cutoff_percentage": data_cutoff_percentage,
-            "dataset_checksum": deterministic_dataset_checksum(source_event_values),
+            "dataset_checksum": resolved_dataset_checksum,
             "data_snapshot_fingerprint": snapshot.fingerprint,
             "configuration_sha256": configuration_checksum,
             "random_seed": random_seed,
@@ -539,7 +576,7 @@ class ServingArtifact:
             "artifact_id": artifact_id,
             "lifecycle_stage": lifecycle_stage,
             "data_cutoff_percentage": data_cutoff_percentage,
-            "source_event_count": len(source_event_values),
+            "source_event_count": resolved_source_event_count,
             # event_count remains the snapshot count for compatibility with Issue #35.
             "event_count": snapshot.event_count,
             "positive_interaction_count": len(interactions),

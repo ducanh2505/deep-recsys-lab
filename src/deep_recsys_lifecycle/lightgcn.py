@@ -66,6 +66,7 @@ class _GraphData:
     source_nodes: tuple[int, ...]
     destination_nodes: tuple[int, ...]
     normalized_weights: tuple[float, ...]
+    positive_interaction_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +214,12 @@ def fit_lightgcn(
             "fallback when MPS representative workload exceeds CPU by "
             f"{resolved_config.mps_slowdown_threshold:.2f}x"
         ),
+        "positive_interactions_seen": graph.positive_interaction_count,
+        "deduplicated_graph_edges": len(graph.positive_edges),
+        "training_triplets": sum(
+            len(graph.subject_histories[subject_id]) < len(graph.movie_ids)
+            for subject_id, _movie_id in graph.positive_edges
+        ) * resolved_config.negative_samples,
     }
     configuration: dict[str, Any] = {
         **resolved_config.to_dict(),
@@ -244,6 +251,7 @@ def _build_graph(
         raise ValueError("LightGCN requires a non-empty snapshot catalog")
     catalog_ids = set(movie_ids)
     positive_pairs: set[tuple[int, int]] = set()
+    positive_interaction_count = 0
     histories: defaultdict[int, list[PositiveInteraction]] = defaultdict(list)
     for interaction in interactions:
         if (
@@ -251,6 +259,7 @@ def _build_graph(
             and interaction.movie_id in catalog_ids
             and interaction.rating >= 4.0
         ):
+            positive_interaction_count += 1
             positive_pairs.add((interaction.subject_id, interaction.movie_id))
             histories[interaction.subject_id].append(interaction)
     positive_edges = tuple(sorted(positive_pairs))
@@ -288,6 +297,7 @@ def _build_graph(
         source_nodes=source_nodes,
         destination_nodes=destination_nodes,
         normalized_weights=normalized_weights,
+        positive_interaction_count=positive_interaction_count,
     )
 
 
@@ -326,8 +336,9 @@ def _measure_workload(graph: _GraphData, config: LightGCNConfig, device_name: st
         propagated = torch.zeros_like(all_embeddings)
         propagated.index_add_(0, destination_nodes, messages)
         all_embeddings = propagated
-    # The serving contract scores every Movie in the catalog for a Known Subject.
-    _ = all_embeddings[: len(graph.subject_ids)] @ all_embeddings[len(graph.subject_ids) :].T
+    # Measure full-catalog scoring for one Subject; forming the all-Subject score matrix
+    # would allocate O(subjects * movies) values that serving never requests.
+    _ = all_embeddings[:1] @ all_embeddings[len(graph.subject_ids) :].T
     _synchronize(device_name)
     return max(monotonic() - started, 1e-9)
 
@@ -347,6 +358,8 @@ def _train_once(
     model.train()
     for _epoch in range(config.epochs):
         random.shuffle(triplets)
+        batch_losses: list[Tensor] = []
+        subject_embeddings, movie_embeddings = model.propagate()
         for start in range(0, len(triplets), config.batch_size):
             batch = triplets[start : start + config.batch_size]
             subject_indices = torch.tensor(
@@ -358,7 +371,6 @@ def _train_once(
             negative_indices = torch.tensor(
                 [item[2] for item in batch], dtype=torch.long, device=device
             )
-            subject_embeddings, movie_embeddings = model.propagate()
             subject_values = subject_embeddings[subject_indices]
             positive_values = movie_embeddings[positive_indices]
             negative_values = movie_embeddings[negative_indices]
@@ -370,10 +382,11 @@ def _train_once(
                 + model.movie_embedding.weight[positive_indices].square().mean()
                 + model.movie_embedding.weight[negative_indices].square().mean()
             )
-            loss = bpr_loss + regularization
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()  # type: ignore[no-untyped-call]
-            optimizer.step()
+            batch_weight = len(batch) / len(triplets)
+            batch_losses.append((bpr_loss + regularization) * batch_weight)
+        optimizer.zero_grad(set_to_none=True)
+        torch.stack(batch_losses).sum().backward()  # type: ignore[no-untyped-call]
+        optimizer.step()
 
     model.eval()
     with torch.no_grad():
@@ -399,18 +412,17 @@ def _sample_triplets(
 
     triplets: list[tuple[int, int, int]] = []
     for subject_id, movie_id in graph.positive_edges:
-        negatives = [
-            candidate
-            for candidate in graph.movie_ids
-            if candidate not in observed_by_subject[subject_id]
-        ]
+        observed = observed_by_subject[subject_id]
         for _sample in range(config.negative_samples):
-            if negatives:
+            if len(observed) < len(graph.movie_ids):
+                negative_index = rng.randrange(len(graph.movie_ids))
+                while graph.movie_ids[negative_index] in observed:
+                    negative_index = rng.randrange(len(graph.movie_ids))
                 triplets.append(
                     (
                         subject_index[subject_id],
                         movie_index[movie_id],
-                        movie_index[rng.choice(negatives)],
+                        negative_index,
                     )
                 )
     if not triplets:

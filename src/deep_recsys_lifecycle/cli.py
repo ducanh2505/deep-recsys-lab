@@ -10,6 +10,9 @@ import typer
 
 from .kafka import ConfluentKafkaBoundary
 from .lifecycle import run_fast_lifecycle
+from .lightgcn import LightGCNConfig
+from .movielens import prepare_movielens_20m
+from .multivae import MultVAEConfig
 from .rolling import run_rolling_lifecycle
 
 app = typer.Typer(add_completion=False, help="Movie recommender lifecycle commands.")
@@ -79,6 +82,41 @@ def rolling(
     )
     typer.echo(f"Active 100% Serving Artifact: {result.artifact_path}")
     typer.echo(f"Active pointer: {result.active_pointer_path}")
+    typer.echo(f"Latency benchmark: {result.latency_benchmark_path}")
+    typer.echo(f"Static report: {result.report_path}")
+
+
+@app.command("full")
+def full(
+    output: Annotated[Path, typer.Option(help="Full lifecycle output directory.")] = Path(
+        "artifacts/full"
+    ),
+    cache: Annotated[Path, typer.Option(help="Ignored MovieLens cache directory.")] = Path(
+        "var/datasets"
+    ),
+    bootstrap_servers: Annotated[
+        str, typer.Option(help="Kafka bootstrap address.")
+    ] = "localhost:9092",
+) -> None:
+    """Run all MovieLens 20M ratings through the six-stage lifecycle."""
+
+    source = prepare_movielens_20m(cache)
+    _ensure_kafka(bootstrap_servers)
+    result = run_rolling_lifecycle(
+        output_dir=output,
+        kafka=ConfluentKafkaBoundary(bootstrap_servers),
+        source_events=source,
+        evaluation_cohort_limit=5_000,
+        fusion_negative_rows_per_query=20,
+        multivae_config=MultVAEConfig(epochs=1, batch_size=256),
+        multivae_device_preference="auto",
+        lightgcn_config=LightGCNConfig(epochs=1, batch_size=65_536),
+        lightgcn_device_preference="auto",
+        phase_observer=lambda phase, percentage: typer.echo(
+            f"full stage {percentage}%: {phase}", err=True
+        ),
+    )
+    typer.echo(f"Active 100% Serving Artifact: {result.artifact_path}")
     typer.echo(f"Latency benchmark: {result.latency_benchmark_path}")
     typer.echo(f"Static report: {result.report_path}")
 
