@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from copy import deepcopy
 from dataclasses import fields, replace
 from hashlib import sha256
 
@@ -77,7 +78,15 @@ def test_history_only_public_run_has_disjoint_subjects_and_complete_fold_in() ->
     }
     assert result.cohort_subject_ids == replay.cohort_subject_ids
     assert result.split_by_subject == replay.split_by_subject
-    assert report == replay.to_dict()
+    stable_report = deepcopy(report)
+    stable_replay = deepcopy(replay.to_dict())
+    for value in (stable_report, stable_replay):
+        value.pop("runtime")
+        for cohort in value["diagnostics"].values():
+            cohort.pop("inference_latency")
+        for metadata in value["fusion_training"]["retriever_training_metadata"].values():
+            metadata.pop("duration_seconds", None)
+    assert stable_report == stable_replay
     assert report["cohort_subject_ids"] == {
         "train": [4, 5, 7],
         "validation": [2, 6],

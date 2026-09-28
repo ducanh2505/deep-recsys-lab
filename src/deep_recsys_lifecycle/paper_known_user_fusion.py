@@ -6,6 +6,7 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from time import monotonic
 
 from .event_store import DataSnapshot
 from .fusion import (
@@ -36,6 +37,7 @@ from .paper_benchmark import (
     _split_rank,
 )
 from .paper_diagnostics import PaperGoldDiagnostics
+from .paper_measurements import peak_rss_bytes, run_identity, summarize_query_latency
 from .popularity import fit_popularity
 from .retriever import CandidateRetriever, candidate_pool_for_query, validate_candidate_pool_limit
 
@@ -409,6 +411,7 @@ def _evaluate(
     final_rankings: dict[int, tuple[int, ...]] = {}
     subject_metrics: dict[int, Mapping[str, float]] = {}
     evidence: dict[int, Mapping[str, object]] = {}
+    scoring_samples_ms: list[float] = []
     for query in queries:
         if not query.gold_movie_ids:
             loss.observe(
@@ -420,6 +423,7 @@ def _evaluate(
                 final_ranking=(),
             )
             continue
+        scoring_started = monotonic()
         pools = _pools_for(query, retrievers, config.pool_limit)
         for name, pool in pools.items():
             sources[name].add(query.gold_movie_ids, tuple(item.movie_id for item in pool))
@@ -427,6 +431,7 @@ def _evaluate(
         union_ids = tuple(item.movie_id for item in union)
         union_metrics.add(query.gold_movie_ids, union_ids)
         final = rank_lhf_union(fusion, builder, pools, query.history, top_n=100)
+        scoring_samples_ms.append((monotonic() - scoring_started) * 1000)
         loss.observe(
             raw_gold_movie_ids=query.raw_gold_movie_ids,
             eligible_gold_movie_ids=query.gold_movie_ids,
@@ -461,6 +466,7 @@ def _evaluate(
         "oracle_union": union_metrics.result(),
         "final_lhf": final_result,
         "gold_loss": loss.finish(),
+        "inference_latency": summarize_query_latency(scoring_samples_ms, warmup_count=5),
     }, final_rankings, subject_metrics, evidence
 
 
@@ -470,8 +476,10 @@ def run_known_user_hybrid_benchmark(
     """Fit four train-only retrievers and LHF; report validation only."""
 
     resolved = config or KnownUserHybridConfig()
+    run_started = monotonic()
     dataset_checksum = getattr(events, "dataset_checksum", None)
     splits, fit_events, input_fingerprint = _split(events, resolved.seed)
+    split_seconds = monotonic() - run_started
     if not fit_events:
         raise ValueError("Known-User 10-core split has no training interactions")
     outer_catalog = frozenset(event.movie_id for event in fit_events)
@@ -483,6 +491,7 @@ def run_known_user_hybrid_benchmark(
     fold_fit_count = 0
     fold_holdout_count = 0
     fold_fingerprints: list[str] = []
+    inner_started = monotonic()
     for fold_index in range(resolved.inner_fold_count):
         inner_fit, inner_holdout = _inner_holdout(fit_events, inner_seed, fold_index)
         inner_snapshot, inner_retrievers = _fit_bank(inner_fit, resolved)
@@ -531,11 +540,13 @@ def run_known_user_hybrid_benchmark(
                 "eligible_query_count": len(inner_queries),
             }
         )
+    inner_fit_and_labels_seconds = monotonic() - inner_started
     combined_inner_fingerprint = (
         fold_fingerprints[0]
         if len(fold_fingerprints) == 1
         else hashlib.sha256("\n".join(fold_fingerprints).encode("ascii")).hexdigest()
     )
+    fusion_started = monotonic()
     fusion = train_lhf_classifier(
         query_mode="known_user",
         retriever_bank=_BANK,
@@ -559,21 +570,26 @@ def run_known_user_hybrid_benchmark(
             "inner_holdout_event_count": fold_holdout_count,
         },
     )
+    fusion_training_seconds = monotonic() - fusion_started
     retained_rows = tuple(rows) if resolved.capture_training_rows else ()
     # The outer fit can be large; keep only the fitted classifier and compact provenance.
     del rows
     del inner_retrievers, inner_snapshot, inner_builder, inner_fit, inner_holdout
     del inner_histories, inner_gold, inner_queries
+    outer_started = monotonic()
     outer_snapshot, outer_retrievers = _fit_bank(fit_events, resolved)
     outer_builder = FusionFeatureBuilder.from_snapshot(
         outer_snapshot,
         tuple(PositiveInteraction.from_event(event) for event in fit_events),
         retriever_bank=_BANK,
     )
+    outer_fit_seconds = monotonic() - outer_started
     validation_queries = _queries(splits, outer_catalog, "validation")
+    validation_started = monotonic()
     evaluated, rankings, subject_metrics, evidence = _evaluate(
         validation_queries, outer_retrievers, fusion, outer_builder, outer_catalog, resolved
     )
+    validation_scoring_seconds = monotonic() - validation_started
     final_metrics = evaluated["final_lhf"]
     report: dict[str, object] = {
         "schema_version": 1,
@@ -588,6 +604,7 @@ def run_known_user_hybrid_benchmark(
         },
         "configuration": resolved.to_dict(),
         "package_source_sha256": _package_source_fingerprint(),
+        "run_identity": run_identity(events),
         "retriever_bank": list(_BANK),
         "training_catalog_movie_ids": sorted(outer_catalog),
         "split_membership_by_subject": {
@@ -625,6 +642,10 @@ def run_known_user_hybrid_benchmark(
         },
         "validation_gold_sets_by_subject": {
             str(query.subject_id): list(query.gold_movie_ids) for query in validation_queries
+            if query.gold_movie_ids
+        },
+        "validation_subject_metrics": {
+            str(subject_id): dict(values) for subject_id, values in subject_metrics.items()
         },
         "training": {
             "outer_snapshot_fingerprint": outer_snapshot.fingerprint,
@@ -634,6 +655,10 @@ def run_known_user_hybrid_benchmark(
             "fusion": {
                 "training_status": fusion.training_status,
                 "training_metadata": dict(fusion.training_metadata),
+            },
+            "retriever_training_metadata": {
+                name: dict(getattr(retriever, "training_metadata", {}))
+                for name, retriever in outer_retrievers.items()
             },
             "outer_fit_partition": "train_movie_ids",
             "inner_labels_partition": "interaction holdouts within train_movie_ids",
@@ -647,6 +672,15 @@ def run_known_user_hybrid_benchmark(
             **evaluated,
         },
         "metrics": final_metrics,
+        "runtime": {
+            "split_seconds": split_seconds,
+            "inner_retriever_fit_and_fusion_rows_seconds": inner_fit_and_labels_seconds,
+            "fusion_classifier_training_seconds": fusion_training_seconds,
+            "outer_retriever_fit_seconds": outer_fit_seconds,
+            "validation_scoring_seconds": validation_scoring_seconds,
+            "total_wall_seconds": monotonic() - run_started,
+            "peak_process_rss_bytes": peak_rss_bytes(),
+        },
     }
     return KnownUserHybridResult(
         report=report,

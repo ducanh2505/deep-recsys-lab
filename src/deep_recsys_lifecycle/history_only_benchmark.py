@@ -7,6 +7,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from time import monotonic
 
 from .event_store import DataSnapshot
 from .fusion import (
@@ -24,6 +25,7 @@ from .itemknn import fit_itemknn
 from .models import Candidate, PositiveInteraction, RatingEvent
 from .multivae import MultVAEConfig, fit_multivae
 from .paper_diagnostics import PaperGoldDiagnostics
+from .paper_measurements import peak_rss_bytes, run_identity, summarize_query_latency
 from .popularity import fit_popularity
 from .retriever import CandidateRetriever, candidate_pool_for_query, validate_candidate_pool_limit
 
@@ -122,6 +124,7 @@ def run_history_only_benchmark(
     """Run the disjoint-Subject split with a three-source History-Only LHF baseline."""
 
     config = config or HistoryOnlyBenchmarkConfig()
+    run_started = monotonic()
     dataset_checksum = getattr(events, "dataset_checksum", None)
     subject_events: defaultdict[int, dict[int, RatingEvent]] = defaultdict(dict)
     rating_event_count = 0
@@ -201,6 +204,8 @@ def run_history_only_benchmark(
     short_subject_count = len(subject_events) - len(eligible_subject_movies)
     inner_subject_ids = _inner_subject_partition(cohorts["train"], config)
     inner_fit_ids, inner_pseudo_ids = inner_subject_ids
+    split_seconds = monotonic() - run_started
+    inner_started = monotonic()
     inner_eligible_query_count = 0
     training_rows: list[FusionTrainingRow] = []
     inner_gold_event_ids: list[str] = []
@@ -246,6 +251,7 @@ def run_history_only_benchmark(
         inner_fit_event_ids_sha256 = _event_ids_fingerprint(inner_snapshot.events)
         inner_feature_builder = inner_bank.feature_builder
         del inner_bank, inner_snapshot, inner_events
+    inner_fit_and_labels_seconds = monotonic() - inner_started
     rows = tuple(training_rows)
     del training_rows
     inner_eligible_gold_event_count = len(inner_gold_event_ids)
@@ -261,6 +267,7 @@ def run_history_only_benchmark(
     outer_snapshot_fingerprint = outer_snapshot.fingerprint
     outer_fit_event_ids_sha256 = _event_ids_fingerprint(training_events)
     training_interaction_count = len(training_events)
+    fusion_started = monotonic()
     fusion = train_lhf_classifier(
         query_mode="history_only",
         retriever_bank=HISTORY_ONLY_BANK,
@@ -297,12 +304,15 @@ def run_history_only_benchmark(
             "outer_fit_event_count": outer_snapshot.event_count,
         },
     )
+    fusion_training_seconds = monotonic() - fusion_started
     training_row_count = len(rows)
     positive_training_row_count = sum(row.label for row in rows)
     negative_training_row_count = training_row_count - positive_training_row_count
     retained_training_rows = rows if config.capture_evidence else ()
     del rows
+    outer_started = monotonic()
     outer_bank = _fit_retriever_bank(outer_snapshot, config=config, seed=config.seed)
+    outer_fit_seconds = monotonic() - outer_started
     del outer_snapshot, training_events
 
     split_by_subject: dict[int, HistoryOnlySubjectSplit] = {}
@@ -340,6 +350,7 @@ def run_history_only_benchmark(
     metrics: dict[str, dict[str, int | float | None]] = {}
     diagnostics: dict[str, object] = {}
     candidate_pools: dict[str, object] = {}
+    evaluation_started = monotonic()
     for cohort in ("validation", "test") if evaluate_test else ("validation",):
         cohort_metrics, cohort_diagnostics, cohort_pools = _score_cohort(
             cohorts[cohort],
@@ -355,6 +366,7 @@ def run_history_only_benchmark(
         metrics[cohort] = cohort_metrics
         diagnostics[cohort] = cohort_diagnostics
         candidate_pools[cohort] = cohort_pools
+    evaluation_seconds = monotonic() - evaluation_started
     report: dict[str, object] = {
         "schema_version": 2,
         "protocol": "mult-vae-history-only",
@@ -364,6 +376,7 @@ def run_history_only_benchmark(
             "dataset_sha256": dataset_checksum if isinstance(dataset_checksum, str) else None,
             "input_event_fingerprint_sha256": input_fingerprint,
         },
+        "run_identity": run_identity(events),
         "evaluation": {
             "query_mode": "history_only",
             "query_features": ["fold_in_history_movie_ids"],
@@ -485,12 +498,25 @@ def run_history_only_benchmark(
             "training_row_count": training_row_count,
             "positive_training_row_count": positive_training_row_count,
             "negative_training_row_count": negative_training_row_count,
+            "retriever_training_metadata": {
+                name: dict(getattr(retriever, "training_metadata", {}))
+                for name, retriever in outer_bank.retrievers.items()
+            },
         },
         "diagnostics": diagnostics,
         "candidate_pools": (
             candidate_pools if config.capture_evidence else {"status": "omitted"}
         ),
         "metrics": metrics,
+        "runtime": {
+            "split_seconds": split_seconds,
+            "inner_retriever_fit_and_fusion_rows_seconds": inner_fit_and_labels_seconds,
+            "fusion_classifier_training_seconds": fusion_training_seconds,
+            "outer_retriever_fit_seconds": outer_fit_seconds,
+            "validation_and_optional_test_scoring_seconds": evaluation_seconds,
+            "total_wall_seconds": monotonic() - run_started,
+            "peak_process_rss_bytes": peak_rss_bytes(),
+        },
     }
     visible_subject_ids = (
         (*cohorts["validation"], *cohorts["test"]) if evaluate_test else cohorts["validation"]
@@ -637,6 +663,8 @@ def _score_cohort(
     oracle_retrieved_gold_count = 0
     oracle_candidate_occurrence_count = 0
     reported_pools: dict[str, object] = {}
+    subject_metrics: dict[str, dict[str, float]] = {}
+    scoring_samples_ms: list[float] = []
     loss = PaperGoldDiagnostics(
         mode="history_only",
         source_names=HISTORY_ONLY_BANK,
@@ -656,9 +684,11 @@ def _score_cohort(
             )
             continue
         history = queries_by_subject[subject_id].history_movie_ids
+        scoring_started = monotonic()
         pools = _query_pools(bank.retrievers, history, pool_limit)
         union = build_candidate_union(pools, history=history)
         final = rank_lhf_union(fusion, bank.feature_builder, pools, history, top_n=100)
+        scoring_samples_ms.append((monotonic() - scoring_started) * 1000)
         loss.observe(
             raw_gold_movie_ids=split_by_subject[subject_id].held_out_movie_ids,
             eligible_gold_movie_ids=gold_set,
@@ -682,6 +712,13 @@ def _score_cohort(
             source_full_pool_covered_queries[name] += bool(full_pool_hits)
             source_full_pool_candidate_occurrences[name] += len(pool)
         final_accumulator.add(final, gold_set)
+        one_subject = _MetricAccumulator()
+        one_subject.add(final, gold_set)
+        subject_metrics[str(subject_id)] = {
+            key: float(value)
+            for key, value in one_subject.finish(training_catalog).items()
+            if key.startswith(("Recall@", "NDCG@")) and value is not None
+        }
         if capture_evidence:
             reported_pools[str(subject_id)] = {
                 "sources": {
@@ -730,6 +767,8 @@ def _score_cohort(
         },
         "final_lhf": final_metrics,
         "gold_loss": loss.finish(),
+        "per_subject_final_lhf": subject_metrics,
+        "inference_latency": summarize_query_latency(scoring_samples_ms, warmup_count=5),
     }
     return final_metrics, diagnostic, reported_pools
 
