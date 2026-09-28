@@ -186,7 +186,7 @@ def history_only_benchmark(
         bool, typer.Option(help="Reveal test metrics only after the configuration is frozen.")
     ] = False,
 ) -> None:
-    """Run the separate Mult-VAE History-Only paper-style benchmark."""
+    """Fit the three-retriever History-Only hybrid and report validation only."""
 
     config = HistoryOnlyBenchmarkConfig(
         seed=seed,

@@ -15,6 +15,7 @@ from .fusion import (
     FusionTrainingRow,
     LearnedHybridFusion,
     build_candidate_union,
+    build_lhf_training_rows,
     expected_feature_names,
     rank_lhf_union,
     train_lhf_classifier,
@@ -593,7 +594,7 @@ def _query_pools(
 
 def build_history_only_lhf_training_rows(
     queries: Sequence[HistoryOnlyFusionQuery],
-    pools: Mapping[str, Mapping[str, Sequence[Candidate]]],
+    pools: Mapping[int | str, Mapping[str, Sequence[Candidate]]],
     feature_builder: FusionFeatureBuilder,
     *,
     max_negative_rows_per_query: int | None = None,
@@ -603,42 +604,13 @@ def build_history_only_lhf_training_rows(
 
     if feature_builder.retriever_bank != HISTORY_ONLY_BANK:
         raise ValueError("History-Only fusion features require the three-source bank")
-    if max_negative_rows_per_query is not None and max_negative_rows_per_query < 1:
-        raise ValueError("max_negative_rows_per_query must be positive")
-    rows: list[FusionTrainingRow] = []
-    for query in queries:
-        query_pools = pools.get(query.pool_key, {})
-        unknown = set(query_pools) - set(HISTORY_ONLY_BANK)
-        if unknown:
-            raise ValueError(f"History-Only fusion pools contain ineligible retrievers: {unknown}")
-        union = build_candidate_union(query_pools, history=query.history)
-        gold = set(query.gold_movie_ids)
-        positives = tuple(candidate for candidate in union if candidate.movie_id in gold)
-        negatives = tuple(candidate for candidate in union if candidate.movie_id not in gold)
-        if max_negative_rows_per_query is not None:
-            negatives = tuple(
-                sorted(
-                    negatives,
-                    key=lambda candidate: (
-                        hashlib.sha256(
-                            f"{seed}:{query.pool_key}:{candidate.movie_id}".encode()
-                        ).digest(),
-                        candidate.movie_id,
-                    ),
-                )[:max_negative_rows_per_query]
-            )
-        for candidate in sorted((*positives, *negatives), key=lambda item: item.movie_id):
-            rows.append(
-                FusionTrainingRow(
-                    query_key=query.pool_key,
-                    movie_id=candidate.movie_id,
-                    features=feature_builder.features_for(
-                        candidate.movie_id, query_pools, query.history
-                    ),
-                    label=int(candidate.movie_id in gold),
-                )
-            )
-    return tuple(rows)
+    return build_lhf_training_rows(
+        queries,
+        pools,
+        feature_builder,
+        max_negative_rows_per_query=max_negative_rows_per_query,
+        seed=seed,
+    )
 
 
 def _score_cohort(

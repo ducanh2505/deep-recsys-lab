@@ -220,13 +220,17 @@ uv run movie-recsys known-user-benchmark \
 This independent MovieLens 20M run follows the Mult-VAE held-out Subject protocol: ratings of
 at least 4.0, at least five distinct positive Movies per Subject, and disjoint groups of 10,000
 validation and 10,000 test Subjects. Remaining Subjects supply the training-visible Candidate
-Catalog and Popularity baseline. Each held-out Subject's positives are split deterministically
-into 80% fold-in history and a complete 20% held-out set. A scoring Query contains only fold-in
-Movie IDs; its Subject ID is used only to audit split membership and metrics. Movies absent from
+Catalog. Popularity, ItemKNN, and Mult-VAE fit on those Subjects; an inner disjoint Subject
+split trains History-Only Learned Hybrid Fusion on naturally retrieved Gold Set Movies. Fusion
+supplies the final Top-100 order, while the report keeps source and Oracle Union diagnostics.
+Each held-out Subject's positives are split deterministically into 80% fold-in history and a
+complete 20% held-out set. A scoring Query contains only fold-in Movie IDs; its Subject ID is
+used only to audit split membership and metrics. Movies absent from
 the training catalog are recorded and excluded from the scoring history or eligible Gold Set.
-The JSON report includes exact Subject cohort membership, exclusions, and validation macro
-Recall and binary NDCG at 10, 20, 50, and 100. Test partitions and metrics stay sealed during
-validation; after freezing a configuration, `--evaluate-test` reveals the test split and scores.
+The JSON report includes exact Subject cohort membership, exclusions, training provenance, and
+validation macro Recall and binary NDCG at 10, 20, 50, and 100. Test partitions and metrics stay
+sealed during validation; after freezing a configuration, `--evaluate-test` reveals the test
+split and scores.
 The run makes no temporal quality claim.
 
 ```bash
