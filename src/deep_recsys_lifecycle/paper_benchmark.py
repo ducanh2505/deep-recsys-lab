@@ -83,9 +83,7 @@ def run_known_user_benchmark(
     input_fingerprint = hashlib.sha256(
         f"{rating_event_count}:{fingerprint_xor:064x}:{fingerprint_sum:064x}".encode("ascii")
     ).hexdigest()
-    duplicate_positive_interaction_count = (
-        positive_rating_event_count - len(positive_by_pair)
-    )
+    duplicate_positive_interaction_count = positive_rating_event_count - len(positive_by_pair)
     positive_before_k_core_count = len(positive_by_pair)
     retained = _filter_to_k_core(positive_by_pair, K_CORE_MIN_DEGREE)
     subject_events: dict[int, list[RatingEvent]] = {}
@@ -119,9 +117,7 @@ def run_known_user_benchmark(
                 event.movie_id,
             ),
         )
-        validation_count = max(
-            1, math.ceil(len(outer_train_events) * VALIDATION_FRACTION_OF_TRAIN)
-        )
+        validation_count = max(1, math.ceil(len(outer_train_events) * VALIDATION_FRACTION_OF_TRAIN))
         validation_events = ordered_for_validation[:validation_count]
         validation_ids = {event.movie_id for event in validation_events}
         fitted_train_events = [
@@ -133,22 +129,24 @@ def run_known_user_benchmark(
         test_event_count += len(test_events)
         split_by_subject[subject_id] = KnownUserSubjectSplit(
             train_movie_ids=tuple(sorted(event.movie_id for event in fitted_train_events)),
-            outer_train_movie_ids=tuple(
-                sorted(event.movie_id for event in outer_train_events)
-            ),
+            outer_train_movie_ids=tuple(sorted(event.movie_id for event in outer_train_events)),
             validation_movie_ids=tuple(sorted(event.movie_id for event in validation_events)),
             test_movie_ids=tuple(sorted(event.movie_id for event in test_events)),
         )
 
     catalog = frozenset(event.movie_id for event in train_events)
     gold_sets: dict[int, tuple[int, ...]] = {}
+    cold_test_gold_by_subject: dict[int, tuple[int, ...]] = {}
     missing_from_catalog_count = 0
     history_overlap_count = 0
     subjects_without_test_gold = 0
     for subject_id, split in split_by_subject.items():
-        missing_from_catalog_count += sum(
-            movie_id not in catalog for movie_id in split.test_movie_ids
+        cold_test_gold = tuple(
+            movie_id for movie_id in split.test_movie_ids if movie_id not in catalog
         )
+        if cold_test_gold:
+            cold_test_gold_by_subject[subject_id] = cold_test_gold
+        missing_from_catalog_count += len(cold_test_gold)
         history_overlap_count += sum(
             movie_id in split.train_movie_ids for movie_id in split.test_movie_ids
         )
@@ -207,7 +205,11 @@ def run_known_user_benchmark(
             "subject_cohort_cap": None,
             "training_catalog_source": "final_training_interactions",
             "history_source": "final_training_interactions",
+            "test_fit_partition": "train_movie_ids",
+            "validation_partition": "validation_movie_ids reserved from outer_train_movie_ids",
+            "validation_refit_before_test": False,
             "popularity_tie_break": "movie_id_ascending",
+            "package_source_sha256": _package_source_fingerprint(),
             "split_membership_sha256": {
                 partition: _membership_fingerprint(split_by_subject, partition)
                 for partition in ("train", "validation", "test")
@@ -229,11 +231,27 @@ def run_known_user_benchmark(
             "training_catalog_movie_count": len(catalog),
         },
         "training_catalog_movie_ids": sorted(catalog),
+        "split_membership_by_subject": {
+            str(subject_id): {
+                "train_movie_ids": list(split.train_movie_ids),
+                "validation_movie_ids": list(split.validation_movie_ids),
+                "outer_train_movie_ids": list(split.outer_train_movie_ids),
+                "test_movie_ids": list(split.test_movie_ids),
+            }
+            for subject_id, split in split_by_subject.items()
+        },
+        "gold_sets_by_subject": {
+            str(subject_id): list(gold_set) for subject_id, gold_set in gold_sets.items()
+        },
         "exclusions": {
             "positive_interaction_count_removed_by_10_core": (
                 positive_before_k_core_count - len(retained)
             ),
             "test_gold_movie_count_missing_from_training_catalog": missing_from_catalog_count,
+            "test_gold_movie_ids_missing_from_training_catalog_by_subject": {
+                str(subject_id): list(movie_ids)
+                for subject_id, movie_ids in cold_test_gold_by_subject.items()
+            },
             "test_gold_movie_count_overlapping_training_history": history_overlap_count,
             "training_catalog_history_movie_occurrence_count": sum(
                 movie_id in catalog
@@ -297,12 +315,9 @@ def _known_user_metrics(
         ranked_movie_ids = tuple(
             movie_id for movie_id in global_ranking if movie_id not in history_ids
         )[:100]
-        rank_by_movie = {
-            movie_id: rank for rank, movie_id in enumerate(ranked_movie_ids, start=1)
-        }
+        rank_by_movie = {movie_id: rank for rank, movie_id in enumerate(ranked_movie_ids, start=1)}
         if any(
-            rank_by_movie.get(movie_id, len(ranked_movie_ids) + 1) <= 100
-            for movie_id in gold_set
+            rank_by_movie.get(movie_id, len(ranked_movie_ids) + 1) <= 100 for movie_id in gold_set
         ):
             covered_queries += 1
         recommended_movies.update(ranked_movie_ids[:100])
@@ -314,25 +329,17 @@ def _known_user_metrics(
                 if movie_id in rank_by_movie and rank_by_movie[movie_id] <= cutoff
             ]
             recall_totals[cutoff] += len(hits) / len(gold_set)
-            discounted_gain = sum(
-                1.0 / math.log2(rank + 1) for rank in hits
-            )
+            discounted_gain = sum(1.0 / math.log2(rank + 1) for rank in hits)
             ideal_gain = sum(
-                1.0 / math.log2(rank + 1)
-                for rank in range(1, min(cutoff, len(gold_set)) + 1)
+                1.0 / math.log2(rank + 1) for rank in range(1, min(cutoff, len(gold_set)) + 1)
             )
             ndcg_totals[cutoff] += discounted_gain / ideal_gain if ideal_gain else 0.0
 
     divisor = query_count or 1
     return {
         "query_count": query_count,
-        **{
-            f"Recall@{cutoff}": value / divisor
-            for cutoff, value in recall_totals.items()
-        },
-        **{
-            f"NDCG@{cutoff}": value / divisor for cutoff, value in ndcg_totals.items()
-        },
+        **{f"Recall@{cutoff}": value / divisor for cutoff, value in recall_totals.items()},
+        **{f"NDCG@{cutoff}": value / divisor for cutoff, value in ndcg_totals.items()},
         "QueryRetrievalCoverage@100": covered_queries / divisor if query_count else 0.0,
         "CatalogCoverage@100": (
             len(recommended_movies) / len(training_catalog)
@@ -342,9 +349,7 @@ def _known_user_metrics(
     }
 
 
-def _membership_fingerprint(
-    splits: Mapping[int, KnownUserSubjectSplit], partition: str
-) -> str:
+def _membership_fingerprint(splits: Mapping[int, KnownUserSubjectSplit], partition: str) -> str:
     digest = hashlib.sha256()
     for subject_id in sorted(splits):
         split = splits[subject_id]
@@ -361,9 +366,17 @@ def _membership_fingerprint(
     return digest.hexdigest()
 
 
-def write_known_user_benchmark_report(
-    result: KnownUserBenchmarkResult, path: Path
-) -> Path:
+def _package_source_fingerprint() -> str:
+    digest = hashlib.sha256()
+    for source_file in sorted(Path(__file__).parent.glob("*.py")):
+        digest.update(source_file.name.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(source_file.read_bytes())
+        digest.update(b"\x00")
+    return digest.hexdigest()
+
+
+def write_known_user_benchmark_report(result: KnownUserBenchmarkResult, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(result.to_dict(), indent=2, sort_keys=True, ensure_ascii=False) + "\n",

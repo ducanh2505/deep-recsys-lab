@@ -197,8 +197,9 @@ least 4.0, iterative 10-core filtering, deterministic per-Subject 80/20 train/te
 validation reserved from the training portion. Popularity ranks every Movie in the final
 training-visible catalog after excluding each Subject's training history. The structured JSON
 report records macro Recall/NDCG at 10, 20, 50, and 100, cold-item exclusions, split fingerprints,
-and source provenance. It does not start Kafka and must be read separately from the chronological
-rolling report.
+exact per-Subject partitions and Gold Sets, and source and code fingerprints. The reserved
+validation partition is excluded from fitting and test history. This run does not start Kafka
+and must be read separately from the chronological rolling report.
 
 ```bash
 uv run movie-recsys known-user-benchmark \

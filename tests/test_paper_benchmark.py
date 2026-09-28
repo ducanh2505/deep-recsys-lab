@@ -127,16 +127,30 @@ def test_known_user_run_filters_positive_10core_and_reproduces_splits() -> None:
     )
     assert not set(subject_two.outer_train_movie_ids) & set(subject_two.test_movie_ids)
     assert all(99 not in split.train_movie_ids for split in result.split_by_subject.values())
+    assert len(report["split_membership_by_subject"]) == 10
+    assert report["split_membership_by_subject"]["2"] == {
+        "train_movie_ids": list(subject_two.train_movie_ids),
+        "validation_movie_ids": [5, 14, 15, 40],
+        "outer_train_movie_ids": list(subject_two.outer_train_movie_ids),
+        "test_movie_ids": [10, 20, 26, 28, 29, 31, 35, 38, 99],
+    }
+    assert report["gold_sets_by_subject"]["2"] == [10, 20, 26, 28, 29, 31, 35, 38]
 
     exclusions = report["exclusions"]
     assert exclusions["positive_interaction_count_removed_by_10_core"] == 10
     assert exclusions["test_gold_movie_count_missing_from_training_catalog"] == 19
+    cold_gold = exclusions["test_gold_movie_ids_missing_from_training_catalog_by_subject"]
+    assert cold_gold["2"] == [99]
+    assert sum(map(len, cold_gold.values())) == 19
     assert exclusions["subjects_without_eligible_test_gold"] == 0
     reproducibility = report["reproducibility"]
     assert reproducibility["split_seed"] == 42
     assert reproducibility["split_algorithm"] == "sha256-ranked-per-subject-v1"
     assert reproducibility["subject_cohort_cap"] is None
     assert reproducibility["training_catalog_source"] == "final_training_interactions"
+    assert reproducibility["test_fit_partition"] == "train_movie_ids"
+    assert reproducibility["validation_refit_before_test"] is False
+    assert len(reproducibility["package_source_sha256"]) == 64
     assert report["source"]["input_event_fingerprint_sha256"]
     assert report["source"] == replay.to_dict()["source"]
 
