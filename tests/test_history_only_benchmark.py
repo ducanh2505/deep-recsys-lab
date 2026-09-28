@@ -2,19 +2,23 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import fields
+from dataclasses import fields, replace
+from hashlib import sha256
 
 import pytest
 from typer.testing import CliRunner
 
 from deep_recsys_lifecycle import cli
+from deep_recsys_lifecycle.fusion import FusionFeatureBuilder
 from deep_recsys_lifecycle.history_only_benchmark import (
     HistoryOnlyBenchmarkConfig,
+    HistoryOnlyFusionQuery,
     HistoryOnlyQuery,
+    build_history_only_lhf_training_rows,
     run_history_only_benchmark,
     write_history_only_benchmark_report,
 )
-from deep_recsys_lifecycle.models import RatingEvent
+from deep_recsys_lifecycle.models import Candidate, RatingEvent
 
 _SMALL_CONFIG = HistoryOnlyBenchmarkConfig(
     seed=42, validation_subject_count=2, test_subject_count=2
@@ -39,6 +43,24 @@ def _public_events(*, late_test_gold: bool = False) -> tuple[RatingEvent, ...]:
     ]
     events.append(RatingEvent.from_movielens(1, 1, 5.0, 10_001))
     events.append(RatingEvent.from_movielens(8, 204, 3.0, 8_204))
+    return tuple(events)
+
+
+def _trained_events() -> tuple[RatingEvent, ...]:
+    events = [
+        RatingEvent.from_movielens(
+            subject_id,
+            ((subject_id * 11 + offset) % 150) + 1,
+            5.0,
+            subject_id * 1_000 + offset,
+        )
+        for subject_id in range(1, 17)
+        for offset in range(60)
+    ]
+    events.extend(
+        RatingEvent.from_movielens(subject_id, 999, 5.0, subject_id * 1_000 + 999)
+        for subject_id in (9, 10, 14, 15)
+    )
     return tuple(events)
 
 
@@ -133,12 +155,12 @@ def test_history_only_public_run_records_catalog_exclusions_and_no_identity_in_q
     ] == [999]
 
 
-def test_history_only_public_metrics_use_capped_recall_denominator_and_binary_ndcg() -> None:
+def test_history_only_public_metrics_use_final_lhf_order_and_report_source_diagnostics() -> None:
     report = run_history_only_benchmark(
         _public_events(), config=_SMALL_CONFIG, evaluate_test=True
     ).to_dict()
-    validation = report["metrics"]["validation"]
-    test = report["metrics"]["test"]
+    validation = report["diagnostics"]["validation"]["sources"]["popularity"]
+    test = report["diagnostics"]["test"]["sources"]["popularity"]
 
     assert validation["query_count"] == 2
     for cutoff in (10, 20, 50, 100):
@@ -159,16 +181,137 @@ def test_history_only_public_metrics_use_capped_recall_denominator_and_binary_nd
     assert test["NDCG@50"] == pytest.approx((1 + expected_late_ndcg) / 2)
     assert test["NDCG@100"] == pytest.approx((1 + expected_late_ndcg) / 2)
     assert test["QueryRetrievalCoverage@100"] == 1.0
+    assert report["metrics"]["test"] == report["diagnostics"]["test"]["final_lhf"]
+    assert report["metrics"]["test"]["Recall@10"] == pytest.approx(0.35)
+    assert report["metrics"]["test"]["Recall@10"] != test["Recall@10"]
+    assert report["diagnostics"]["test"]["oracle_union"]["retrieved_gold_movie_count"] == 13
 
 
 def test_history_only_does_not_insert_gold_into_top_100() -> None:
     result = run_history_only_benchmark(
-        _public_events(late_test_gold=True), config=_SMALL_CONFIG, evaluate_test=True
+        _public_events(late_test_gold=True),
+        config=replace(_SMALL_CONFIG, candidate_pool_limit=20, capture_evidence=True),
+        evaluate_test=True,
     )
 
     assert result.gold_sets[3] == (111,)
-    assert result.to_dict()["metrics"]["test"]["Recall@100"] == 0.5
-    assert result.to_dict()["metrics"]["test"]["QueryRetrievalCoverage@100"] == 0.5
+    pools = result.to_dict()["candidate_pools"]["test"]["3"]
+    assert all(111 not in movie_ids for movie_ids in pools["sources"].values())
+    assert 111 not in pools["oracle_union_movie_ids"]
+    assert 111 not in pools["final_lhf_top100_movie_ids"]
+    assert result.to_dict()["diagnostics"]["test"]["oracle_union"][
+        "retrieved_gold_movie_count"
+    ] < 13
+
+
+def test_history_only_fusion_rows_label_all_natural_gold_without_insertion() -> None:
+    builder = FusionFeatureBuilder.from_serving(
+        snapshot_fingerprint="inner-fit",
+        retriever_bank=("popularity", "itemknn", "multivae"),
+        catalog=(1, 2, 3, 4, 5, 6),
+        item_popularity={1: 5, 2: 3, 3: 1},
+    )
+    query = HistoryOnlyFusionQuery(
+        pool_key="inner-000000", history=(), gold_movie_ids=(2, 3, 4)
+    )
+    pools = {
+        query.pool_key: {
+            "popularity": (
+                Candidate(movie_id=1, score=5, rank=1),
+                Candidate(movie_id=2, score=3, rank=2),
+            ),
+            "itemknn": (
+                Candidate(movie_id=3, score=0.8, rank=1),
+                Candidate(movie_id=5, score=0.3, rank=2),
+            ),
+            "multivae": (Candidate(movie_id=6, score=0.6, rank=1),),
+        }
+    }
+
+    rows = build_history_only_lhf_training_rows(
+        (query,), pools, builder, max_negative_rows_per_query=1, seed=42
+    )
+
+    assert {row.movie_id for row in rows if row.label} == {2, 3}
+    assert 4 not in {row.movie_id for row in rows}
+    assert sum(row.label == 0 for row in rows) == 1
+    assert all(row.query_key == "inner-000000" for row in rows)
+    assert "lightgcn_present" not in builder.feature_names
+    assert "subject_id" not in builder.feature_names
+
+
+def test_history_only_public_run_trains_disjoint_fusion_and_reports_top100() -> None:
+    events = _trained_events()
+    result = run_history_only_benchmark(
+        events,
+        config=replace(_SMALL_CONFIG, capture_evidence=True),
+        evaluate_test=True,
+    )
+    report = result.to_dict()
+    cohorts = result.cohort_subject_ids
+    fusion_report = report["fusion_training"]
+
+    assert result.fusion.training_status == "trained"
+    assert fusion_report["training_status"] == "trained"
+    assert fusion_report["retriever_bank"] == ["popularity", "itemknn", "multivae"]
+    assert fusion_report["training_metadata"]["training_boundary"] == (
+        "paper_inner_pseudo_held_out_training_subjects"
+    )
+    assert fusion_report["training_metadata"]["inner_fold_seed"] == 42
+    assert set(result.inner_fit_subject_ids).isdisjoint(result.inner_pseudo_held_out_subject_ids)
+    assert set(result.inner_fit_subject_ids).isdisjoint(cohorts["validation"])
+    assert set(result.inner_fit_subject_ids).isdisjoint(cohorts["test"])
+    assert set(result.inner_pseudo_held_out_subject_ids) <= set(cohorts["train"])
+    assert fusion_report["inner_fit_subject_count"] == len(result.inner_fit_subject_ids)
+    assert fusion_report["outer_fit_subject_count"] == len(cohorts["train"])
+    assert fusion_report["training_metadata"]["inner_fit_event_count"] == (
+        60 * len(result.inner_fit_subject_ids)
+    )
+    for subject_ids, fingerprint_key in (
+        (cohorts["train"], "outer_fit_event_ids_sha256"),
+        (result.inner_fit_subject_ids, "inner_fit_event_ids_sha256"),
+    ):
+        expected_ids = (
+            event.event_id
+            for event in sorted(events, key=lambda event: (event.subject_id, event.movie_id))
+            if event.subject_id in subject_ids
+        )
+        assert fusion_report[fingerprint_key] == sha256(
+            "".join(f"{event_id}\n" for event_id in expected_ids).encode()
+        ).hexdigest()
+    assert fusion_report["positive_training_row_count"] >= 2
+    assert fusion_report["negative_training_row_count"] >= 2
+    assert len(result.fusion_training_rows) == fusion_report["training_row_count"]
+    assert all(str(row.query_key).startswith("inner-") for row in result.fusion_training_rows)
+    assert 999 not in result.training_catalog
+    assert 999 not in result.outer_feature_builder.item_popularity
+    assert result.inner_feature_builder is not None
+    assert 999 not in result.inner_feature_builder.item_popularity
+    assert all(row.movie_id != 999 for row in result.fusion_training_rows)
+    assert "lightgcn" not in " ".join(result.outer_feature_builder.feature_names)
+    assert "subject_id" not in result.outer_feature_builder.feature_names
+
+    for cohort in ("validation", "test"):
+        assert report["metrics"][cohort] == report["diagnostics"][cohort]["final_lhf"]
+        assert set(report["diagnostics"][cohort]["sources"]) == {
+            "popularity",
+            "itemknn",
+            "multivae",
+        }
+        assert set(report["diagnostics"][cohort]["source_full_pools"]) == {
+            "popularity",
+            "itemknn",
+            "multivae",
+        }
+        for subject_id, pools in report["candidate_pools"][cohort].items():
+            assert set(pools["sources"]) == {"popularity", "itemknn", "multivae"}
+            assert len(pools["final_lhf_top100_movie_ids"]) == 100
+            assert len(set(pools["final_lhf_top100_movie_ids"])) == 100
+            assert set(pools["final_lhf_top100_movie_ids"]) <= set(
+                pools["oracle_union_movie_ids"]
+            )
+            assert 999 not in pools["final_lhf_top100_movie_ids"]
+            assert subject_id in report["held_out_subject_splits"][cohort]
 
 
 def test_history_only_seals_test_scores_until_explicit_final_evaluation(tmp_path) -> None:
@@ -179,18 +322,27 @@ def test_history_only_seals_test_scores_until_explicit_final_evaluation(tmp_path
 
     assert saved == validation.to_dict()
     assert saved["protocol"] == "mult-vae-history-only"
-    assert saved["baseline"] == "popularity"
+    assert saved["baseline"] == "history-only-lhf"
     assert set(saved["metrics"]) == {"validation"}
     assert saved["held_out_subject_splits"]["test"]["status"] == "sealed"
     assert saved["held_out_subject_splits"]["test"]["membership_sha256"]
     assert saved["counts"]["test"] == {"subject_count": 2, "status": "sealed"}
     assert saved["exclusions"]["test"] == {"status": "sealed"}
+    assert set(saved["diagnostics"]) == {"validation"}
+    assert saved["candidate_pools"] == {"status": "omitted"}
     assert saved["reproducibility"]["test_evaluated"] is False
     assert saved["training_catalog_movie_ids"] == list(range(1, 131))
     assert saved["cohort_subject_ids"]["test"] == [1, 3]
     assert set(validation.split_by_subject) == {2, 6}
     assert set(validation.gold_sets) == {2, 6}
     assert set(validation.queries_by_subject) == {2, 6}
+    assert validation.fusion_training_rows == ()
+
+    evidence = run_history_only_benchmark(
+        events, config=replace(_SMALL_CONFIG, capture_evidence=True)
+    )
+    assert set(evidence.to_dict()["candidate_pools"]) == {"validation"}
+    assert set(evidence.split_by_subject) == {2, 6}
 
     final = run_history_only_benchmark(events, config=_SMALL_CONFIG, evaluate_test=True)
     assert final.to_dict()["metrics"]["validation"] == saved["metrics"]["validation"]
