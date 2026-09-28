@@ -57,7 +57,12 @@ def test_gold_loss_partitions_raw_heldout_and_counts_queries_separately() -> Non
     assert source_contributions["popularity"]["exclusive_union_gold_movie_occurrences"] == 1
     assert source_contributions["itemknn"]["exclusive_union_gold_movie_occurrences"] == 1
     assert report["history_length_segments"]["0"]["macro_Recall@100"] == pytest.approx(0.2)
-    assert report["training_item_popularity_segments"]["0"]["gold_movie_occurrences"] == 1
+    assert report["history_length_segments"]["0"]["gold_movie_occurrences"] == 6
+    assert report["history_length_segments"]["1-4"]["raw_subject_count"] == 1
+    popularity_zero = report["training_item_popularity_segments"]["0"]
+    assert popularity_zero["gold_movie_occurrences"] == 3
+    assert popularity_zero["eligible_gold_movie_occurrences"] == 1
+    assert popularity_zero["loss_category_gold_movie_occurrences"]["outside_training_catalog"] == 2
 
 
 def test_gold_loss_rejects_fabricated_candidates_and_denominator_changes() -> None:

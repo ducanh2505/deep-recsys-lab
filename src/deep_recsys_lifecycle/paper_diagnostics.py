@@ -72,8 +72,10 @@ class _CategoryCount:
 
 @dataclass(slots=True)
 class _SegmentCount:
+    raw_subject_count: int = 0
     query_count: int = 0
     gold_movie_occurrences: int = 0
+    eligible_gold_movie_occurrences: int = 0
     final_top_100_hits: int = 0
     recall_sum: float = 0.0
     category_occurrences: Counter[str] = field(default_factory=Counter)
@@ -81,20 +83,22 @@ class _SegmentCount:
     def to_dict(self, *, query_segment: bool) -> dict[str, object]:
         result: dict[str, object] = {
             "gold_movie_occurrences": self.gold_movie_occurrences,
+            "eligible_gold_movie_occurrences": self.eligible_gold_movie_occurrences,
             "final_top_100_hits": self.final_top_100_hits,
             "loss_category_gold_movie_occurrences": {
                 name: self.category_occurrences[name] for name in LOSS_CATEGORIES
             },
         }
         if query_segment:
+            result["raw_subject_count"] = self.raw_subject_count
             result["query_count"] = self.query_count
             result["macro_Recall@100"] = (
                 self.recall_sum / self.query_count if self.query_count else 0.0
             )
         else:
-            result["gold_hit_fraction@100"] = (
-                self.final_top_100_hits / self.gold_movie_occurrences
-                if self.gold_movie_occurrences
+            result["eligible_gold_hit_fraction@100"] = (
+                self.final_top_100_hits / self.eligible_gold_movie_occurrences
+                if self.eligible_gold_movie_occurrences
                 else 0.0
             )
         return result
@@ -153,6 +157,16 @@ class PaperGoldDiagnostics:
         self.eligible_gold_movie_occurrences += len(eligible_gold)
         counts_by_category: dict[str, set[int]] = {name: set() for name in LOSS_CATEGORIES}
         counts_by_category["outside_training_catalog"] = raw_gold - eligible_gold
+        history_segment = self.histories.setdefault(
+            _history_segment(len(set(history))), _SegmentCount()
+        )
+        history_segment.raw_subject_count += 1
+        history_segment.gold_movie_occurrences += len(raw_gold)
+        history_segment.eligible_gold_movie_occurrences += len(eligible_gold)
+        for _movie_id in counts_by_category["outside_training_catalog"]:
+            popularity = self.popularities.setdefault("0", _SegmentCount())
+            popularity.gold_movie_occurrences += 1
+            popularity.category_occurrences["outside_training_catalog"] += 1
         pool_ids_by_source = {
             name: {candidate.movie_id for candidate in pools[name]}
             for name in self.source_names
@@ -186,6 +200,7 @@ class PaperGoldDiagnostics:
                 _popularity_segment(evidence), _SegmentCount()
             )
             popularity.gold_movie_occurrences += 1
+            popularity.eligible_gold_movie_occurrences += 1
             popularity.category_occurrences[category] += 1
             popularity.final_top_100_hits += int(category == "recovered_top_100")
 
@@ -202,13 +217,10 @@ class PaperGoldDiagnostics:
 
         for name, ids in counts_by_category.items():
             self.categories[name].add(ids)
+            history_segment.category_occurrences[name] += len(ids)
         if eligible_gold:
             self.evaluated_query_count += 1
-            history_segment = self.histories.setdefault(
-                _history_segment(len(set(history))), _SegmentCount()
-            )
             history_segment.query_count += 1
-            history_segment.gold_movie_occurrences += len(eligible_gold)
             hits = len(counts_by_category["recovered_top_100"])
             history_segment.final_top_100_hits += hits
             denominator = (
@@ -217,14 +229,20 @@ class PaperGoldDiagnostics:
                 else min(100, len(eligible_gold))
             )
             history_segment.recall_sum += hits / denominator
-            for name, ids in counts_by_category.items():
-                history_segment.category_occurrences[name] += len(ids)
 
     def finish(self) -> dict[str, object]:
         if sum(item.movie_occurrences for item in self.categories.values()) != (
             self.raw_gold_movie_occurrences
         ):
             raise RuntimeError("gold-loss categories do not partition raw held-out Movies")
+        if sum(item.gold_movie_occurrences for item in self.histories.values()) != (
+            self.raw_gold_movie_occurrences
+        ):
+            raise RuntimeError("history segments do not cover raw held-out Movies")
+        if sum(item.gold_movie_occurrences for item in self.popularities.values()) != (
+            self.raw_gold_movie_occurrences
+        ):
+            raise RuntimeError("popularity segments do not cover raw held-out Movies")
         largest = max(
             ADDRESSABLE_CATEGORIES,
             key=lambda name: (
@@ -278,5 +296,6 @@ class PaperGoldDiagnostics:
                     "Gold Movie occurrences are Subject-Movie pairs; Query counts may "
                     "overlap across loss categories"
                 ),
+                "raw_cold_items_segmented": True,
             },
         }
