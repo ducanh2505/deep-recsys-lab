@@ -208,6 +208,30 @@ uv run movie-recsys known-user-benchmark \
   --seed 42
 ```
 
+## Run the History-Only paper-style benchmark
+
+This independent MovieLens 20M run follows the Mult-VAE held-out Subject protocol: ratings of
+at least 4.0, at least five distinct positive Movies per Subject, and disjoint groups of 10,000
+validation and 10,000 test Subjects. Remaining Subjects supply the training-visible Candidate
+Catalog and Popularity baseline. Each held-out Subject's positives are split deterministically
+into 80% fold-in history and a complete 20% held-out set. A scoring Query contains only fold-in
+Movie IDs; its Subject ID is used only to audit split membership and metrics. Movies absent from
+the training catalog are recorded and excluded from the scoring history or eligible Gold Set.
+The JSON report includes exact Subject cohort membership, exclusions, and validation macro
+Recall and binary NDCG at 10, 20, 50, and 100. Test partitions and metrics stay sealed during
+validation; after freezing a configuration, `--evaluate-test` reveals the test split and scores.
+The run makes no temporal quality claim.
+
+```bash
+uv run movie-recsys history-only-benchmark \
+  --cache var/datasets \
+  --output artifacts/paper-history-only/report.json \
+  --seed 42
+```
+
+For a small public fixture, pass smaller `--validation-subject-count` and
+`--test-subject-count` values; the five-positive and 80/20 rules remain fixed.
+
 ## Run the full MovieLens 20M profile
 
 The full command verifies all 20,000,263 source ratings, then replays them through Kafka in

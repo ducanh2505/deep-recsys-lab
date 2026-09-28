@@ -8,6 +8,11 @@ from typing import Annotated
 
 import typer
 
+from .history_only_benchmark import (
+    HistoryOnlyBenchmarkConfig,
+    run_history_only_benchmark,
+    write_history_only_benchmark_report,
+)
 from .kafka import ConfluentKafkaBoundary
 from .lifecycle import run_fast_lifecycle
 from .lightgcn import LightGCNConfig
@@ -138,6 +143,39 @@ def known_user_benchmark(
     benchmark = run_known_user_benchmark(source, seed=seed)
     report_path = write_known_user_benchmark_report(benchmark, output)
     typer.echo(f"Known-User benchmark report: {report_path}")
+
+
+@app.command("history-only-benchmark")
+def history_only_benchmark(
+    output: Annotated[
+        Path, typer.Option(help="Path for the structured History-Only benchmark report.")
+    ] = Path("artifacts/paper-history-only/report.json"),
+    cache: Annotated[Path, typer.Option(help="Ignored MovieLens cache directory.")] = Path(
+        "var/datasets"
+    ),
+    seed: Annotated[int, typer.Option(help="Deterministic Subject and fold-in split seed.")] = 42,
+    validation_subject_count: Annotated[
+        int,
+        typer.Option(help="Disjoint validation Subject count; MovieLens 20M default is 10,000."),
+    ] = 10_000,
+    test_subject_count: Annotated[
+        int, typer.Option(help="Disjoint test Subject count; MovieLens 20M default is 10,000.")
+    ] = 10_000,
+    evaluate_test: Annotated[
+        bool, typer.Option(help="Reveal test metrics only after the configuration is frozen.")
+    ] = False,
+) -> None:
+    """Run the separate Mult-VAE History-Only paper-style benchmark."""
+
+    config = HistoryOnlyBenchmarkConfig(
+        seed=seed,
+        validation_subject_count=validation_subject_count,
+        test_subject_count=test_subject_count,
+    )
+    source = prepare_movielens_20m(cache)
+    benchmark = run_history_only_benchmark(source, config=config, evaluate_test=evaluate_test)
+    report_path = write_history_only_benchmark_report(benchmark, output)
+    typer.echo(f"History-Only benchmark report: {report_path}")
 
 
 @app.command("serve")
