@@ -18,7 +18,11 @@ from .lifecycle import run_fast_lifecycle
 from .lightgcn import LightGCNConfig
 from .movielens import prepare_movielens_20m
 from .multivae import MultVAEConfig
-from .paper_benchmark import run_known_user_benchmark, write_known_user_benchmark_report
+from .paper_known_user_fusion import (
+    KnownUserHybridConfig,
+    run_known_user_hybrid_benchmark,
+    write_known_user_hybrid_report,
+)
 from .rolling import run_rolling_lifecycle
 
 app = typer.Typer(add_completion=False, help="Movie recommender lifecycle commands.")
@@ -136,13 +140,30 @@ def known_user_benchmark(
         "var/datasets"
     ),
     seed: Annotated[int, typer.Option(help="Deterministic per-Subject split seed.")] = 42,
+    inner_seed: Annotated[
+        int | None, typer.Option(help="Deterministic inner interaction fold seed.")
+    ] = None,
+    inner_fold_count: Annotated[
+        int, typer.Option(help="Disjoint 10% inner interaction folds (1 to 5).")
+    ] = 1,
+    pool_limit: Annotated[
+        int, typer.Option(help="Candidates per retriever before fusion (1 to 200).")
+    ] = 200,
 ) -> None:
-    """Run the separate LightGCN/NGCF Known-User paper-style benchmark."""
+    """Fit the four-retriever Known-User hybrid and report validation only."""
 
     source = prepare_movielens_20m(cache)
-    benchmark = run_known_user_benchmark(source, seed=seed)
-    report_path = write_known_user_benchmark_report(benchmark, output)
-    typer.echo(f"Known-User benchmark report: {report_path}")
+    benchmark = run_known_user_hybrid_benchmark(
+        source,
+        config=KnownUserHybridConfig(
+            seed=seed,
+            inner_seed=inner_seed,
+            inner_fold_count=inner_fold_count,
+            pool_limit=pool_limit,
+        ),
+    )
+    report_path = write_known_user_hybrid_report(benchmark, output)
+    typer.echo(f"Known-User validation report: {report_path}")
 
 
 @app.command("history-only-benchmark")

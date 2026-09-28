@@ -247,7 +247,11 @@ def build_lhf_training_rows(
     max_negative_rows_per_query: int | None = None,
     seed: int = 42,
 ) -> tuple[FusionTrainingRow, ...]:
-    """Make validation labels from naturally present union rows only."""
+    """Make labels for every naturally retrieved Gold Set Movie.
+
+    The chronological cohort still supplies ``gold_movie_id``. Paper-style queries
+    supply ``gold_movie_ids``; neither form inserts held-out Movies into a pool.
+    """
 
     if max_negative_rows_per_query is not None and (
         isinstance(max_negative_rows_per_query, bool) or max_negative_rows_per_query < 1
@@ -260,6 +264,11 @@ def build_lhf_training_rows(
     expected_names = set(feature_builder.retriever_bank)
     for query in cohort:
         key = _query_key(query)
+        multi_gold = getattr(query, "gold_movie_ids", None)
+        if multi_gold is None:
+            gold_ids = frozenset((query.gold_movie_id,))
+        else:
+            gold_ids = frozenset(multi_gold)
         query_pools = pools.get(key, {})
         unknown_retrievers = set(query_pools) - expected_names
         if unknown_retrievers:
@@ -268,13 +277,13 @@ def build_lhf_training_rows(
         selected = union
         if max_negative_rows_per_query is not None:
             positive = tuple(
-                candidate for candidate in union if candidate.movie_id == query.gold_movie_id
+                candidate for candidate in union if candidate.movie_id in gold_ids
             )
             negatives = sorted(
                 (
                     candidate
                     for candidate in union
-                    if candidate.movie_id != query.gold_movie_id
+                    if candidate.movie_id not in gold_ids
                 ),
                 key=lambda candidate: (
                     sha256(f"{seed}:{key}:{candidate.movie_id}".encode()).digest(),
@@ -290,7 +299,7 @@ def build_lhf_training_rows(
                     features=feature_builder.features_for(
                         candidate.movie_id, query_pools, query.history
                     ),
-                    label=int(candidate.movie_id == query.gold_movie_id),
+                    label=int(candidate.movie_id in gold_ids),
                 )
             )
     return tuple(rows)

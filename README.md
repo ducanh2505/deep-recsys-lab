@@ -194,12 +194,19 @@ portfolio report and three-mode latency evidence.
 
 This separate MovieLens 20M run applies the LightGCN/NGCF Known-User protocol: ratings of at
 least 4.0, iterative 10-core filtering, deterministic per-Subject 80/20 train/test splits, and
-validation reserved from the training portion. Popularity ranks every Movie in the final
-training-visible catalog after excluding each Subject's training history. The structured JSON
-report records macro Recall/NDCG at 10, 20, 50, and 100, cold-item exclusions, split fingerprints,
-exact per-Subject partitions and Gold Sets, and source and code fingerprints. The reserved
-validation partition is excluded from fitting and test history. This run does not start Kafka
-and must be read separately from the chronological rolling report.
+validation reserved from the training portion. Popularity, ItemKNN, Mult-VAE, and LightGCN fit
+on the remaining training interactions. Inner interaction holdouts train Learned Hybrid Fusion,
+which supplies the final Top-100 order. The structured JSON report records validation macro
+Recall/NDCG at 10, 20, 50, and 100, source-pool and Oracle Union diagnostics, catalog
+exclusions, training provenance, and source and code fingerprints. It records exact training
+and validation memberships while withholding test Movie IDs and outcomes until a configuration
+is frozen. This run does not start Kafka and must be read separately from the chronological
+rolling report.
+
+The initial full-profile configuration fits Mult-VAE for one epoch in batches of 256 and
+LightGCN for one epoch in batches of 65,536 on CPU, matching the historical neural training
+budget. One inner 10% interaction fold trains fusion; `--inner-fold-count` can increase that to
+five disjoint folds. The report records these settings for later controlled comparisons.
 
 ```bash
 uv run movie-recsys known-user-benchmark \
