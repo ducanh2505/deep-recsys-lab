@@ -35,6 +35,7 @@ from .paper_benchmark import (
     _package_source_fingerprint,
     _split_rank,
 )
+from .paper_diagnostics import PaperGoldDiagnostics
 from .popularity import fit_popularity
 from .retriever import CandidateRetriever, candidate_pool_for_query, validate_candidate_pool_limit
 
@@ -95,6 +96,7 @@ class _GoldQuery:
     subject_id: int
     history: tuple[int, ...]
     gold_movie_ids: tuple[int, ...]
+    raw_gold_movie_ids: tuple[int, ...] = ()
 
     @property
     def pool_key(self) -> int:
@@ -367,8 +369,7 @@ def _queries(
             for movie_id in held_out
             if movie_id in catalog and movie_id not in split.train_movie_ids
         )
-        if gold:
-            result.append(_GoldQuery(subject_id, split.train_movie_ids, gold))
+        result.append(_GoldQuery(subject_id, split.train_movie_ids, gold, held_out))
     return tuple(result)
 
 
@@ -399,10 +400,26 @@ def _evaluate(
     sources = {name: _RankingMetrics(catalog) for name in _BANK}
     union_metrics = _UnionMetrics(catalog)
     final_metrics = _RankingMetrics(catalog)
+    loss = PaperGoldDiagnostics(
+        mode="known_user",
+        source_names=_BANK,
+        training_catalog=catalog,
+        training_popularity=builder.item_popularity,
+    )
     final_rankings: dict[int, tuple[int, ...]] = {}
     subject_metrics: dict[int, Mapping[str, float]] = {}
     evidence: dict[int, Mapping[str, object]] = {}
     for query in queries:
+        if not query.gold_movie_ids:
+            loss.observe(
+                raw_gold_movie_ids=query.raw_gold_movie_ids,
+                eligible_gold_movie_ids=(),
+                history=query.history,
+                pools={name: () for name in _BANK},
+                fusion_input_movie_ids=(),
+                final_ranking=(),
+            )
+            continue
         pools = _pools_for(query, retrievers, config.pool_limit)
         for name, pool in pools.items():
             sources[name].add(query.gold_movie_ids, tuple(item.movie_id for item in pool))
@@ -410,6 +427,14 @@ def _evaluate(
         union_ids = tuple(item.movie_id for item in union)
         union_metrics.add(query.gold_movie_ids, union_ids)
         final = rank_lhf_union(fusion, builder, pools, query.history, top_n=100)
+        loss.observe(
+            raw_gold_movie_ids=query.raw_gold_movie_ids,
+            eligible_gold_movie_ids=query.gold_movie_ids,
+            history=query.history,
+            pools=pools,
+            fusion_input_movie_ids=union_ids,
+            final_ranking=final,
+        )
         final_ids = tuple(item.movie_id for item in final)
         final_metrics.add(query.gold_movie_ids, final_ids)
         final_rankings[query.subject_id] = final_ids
@@ -435,6 +460,7 @@ def _evaluate(
         "source_pools": {name: accumulator.result() for name, accumulator in sources.items()},
         "oracle_union": union_metrics.result(),
         "final_lhf": final_result,
+        "gold_loss": loss.finish(),
     }, final_rankings, subject_metrics, evidence
 
 
@@ -582,7 +608,9 @@ def run_known_user_hybrid_benchmark(
             "inner_fit_interaction_count": fold_fit_count,
             "inner_holdout_interaction_count": fold_holdout_count,
             "inner_training_query_count": fold_query_count,
-            "validation_query_count": len(validation_queries),
+            "validation_query_count": sum(
+                bool(query.gold_movie_ids) for query in validation_queries
+            ),
             "validation_gold_movie_count": sum(
                 len(query.gold_movie_ids) for query in validation_queries
             ),

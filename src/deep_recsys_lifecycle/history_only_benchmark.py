@@ -23,6 +23,7 @@ from .fusion import (
 from .itemknn import fit_itemknn
 from .models import Candidate, PositiveInteraction, RatingEvent
 from .multivae import MultVAEConfig, fit_multivae
+from .paper_diagnostics import PaperGoldDiagnostics
 from .popularity import fit_popularity
 from .retriever import CandidateRetriever, candidate_pool_for_query, validate_candidate_pool_limit
 
@@ -342,6 +343,7 @@ def run_history_only_benchmark(
     for cohort in ("validation", "test") if evaluate_test else ("validation",):
         cohort_metrics, cohort_diagnostics, cohort_pools = _score_cohort(
             cohorts[cohort],
+            split_by_subject,
             queries_by_subject,
             gold_sets,
             training_catalog,
@@ -615,6 +617,7 @@ def build_history_only_lhf_training_rows(
 
 def _score_cohort(
     subject_ids: tuple[int, ...],
+    split_by_subject: Mapping[int, HistoryOnlySubjectSplit],
     queries_by_subject: Mapping[int, HistoryOnlyQuery],
     gold_sets: Mapping[int, tuple[int, ...]],
     training_catalog: frozenset[int],
@@ -634,14 +637,36 @@ def _score_cohort(
     oracle_retrieved_gold_count = 0
     oracle_candidate_occurrence_count = 0
     reported_pools: dict[str, object] = {}
+    loss = PaperGoldDiagnostics(
+        mode="history_only",
+        source_names=HISTORY_ONLY_BANK,
+        training_catalog=training_catalog,
+        training_popularity=bank.feature_builder.item_popularity,
+    )
     for subject_id in subject_ids:
         gold_set = gold_sets[subject_id]
         if not gold_set:
+            loss.observe(
+                raw_gold_movie_ids=split_by_subject[subject_id].held_out_movie_ids,
+                eligible_gold_movie_ids=(),
+                history=queries_by_subject[subject_id].history_movie_ids,
+                pools={name: () for name in HISTORY_ONLY_BANK},
+                fusion_input_movie_ids=(),
+                final_ranking=(),
+            )
             continue
         history = queries_by_subject[subject_id].history_movie_ids
         pools = _query_pools(bank.retrievers, history, pool_limit)
         union = build_candidate_union(pools, history=history)
         final = rank_lhf_union(fusion, bank.feature_builder, pools, history, top_n=100)
+        loss.observe(
+            raw_gold_movie_ids=split_by_subject[subject_id].held_out_movie_ids,
+            eligible_gold_movie_ids=gold_set,
+            history=history,
+            pools=pools,
+            fusion_input_movie_ids={candidate.movie_id for candidate in union},
+            final_ranking=final,
+        )
         gold_ids = set(gold_set)
         union_ids = {candidate.movie_id for candidate in union}
         union_hits = len(union_ids & gold_ids)
@@ -704,6 +729,7 @@ def _score_cohort(
             "candidate_occurrence_count": oracle_candidate_occurrence_count,
         },
         "final_lhf": final_metrics,
+        "gold_loss": loss.finish(),
     }
     return final_metrics, diagnostic, reported_pools
 
