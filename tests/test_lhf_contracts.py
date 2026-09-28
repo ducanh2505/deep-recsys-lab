@@ -5,6 +5,7 @@ from deep_recsys_lifecycle.event_store import DataSnapshot
 from deep_recsys_lifecycle.fusion import (
     FEATURE_SCHEMA_VERSION,
     FusionFeatureBuilder,
+    LearnedHybridFusion,
     build_candidate_union,
     build_lhf_training_rows,
     expected_feature_names,
@@ -206,12 +207,8 @@ def test_fusion_row_budget_keeps_gold_and_selects_negatives_deterministically() 
     )
     pools = {1: {name: candidates for name in builder.retriever_bank}}
 
-    first = build_lhf_training_rows(
-        cohort, pools, builder, max_negative_rows_per_query=3, seed=42
-    )
-    second = build_lhf_training_rows(
-        cohort, pools, builder, max_negative_rows_per_query=3, seed=42
-    )
+    first = build_lhf_training_rows(cohort, pools, builder, max_negative_rows_per_query=3, seed=42)
+    second = build_lhf_training_rows(cohort, pools, builder, max_negative_rows_per_query=3, seed=42)
 
     assert first == second
     assert len(first) == 4
@@ -287,6 +284,10 @@ def test_trained_classifier_round_trip_and_fallback_order_are_deterministic() ->
     assert classifier.training_status == "trained"
     assert loaded.training_status == "trained"
     assert loaded.score(rows[0].features) == classifier.score(rows[0].features)
+    assert loaded.score_many((rows[0].features, rows[1].features)) == (
+        loaded.score(rows[0].features),
+        loaded.score(rows[1].features),
+    )
 
     fallback = untrained_fusion_classifier(
         "known_user", source_snapshot_fingerprint=builder.snapshot_fingerprint
@@ -302,3 +303,59 @@ def test_trained_classifier_round_trip_and_fallback_order_are_deterministic() ->
     }
     ranked = rank_lhf_union(fallback, builder, pools, (), top_n=2)
     assert [candidate.movie_id for candidate in ranked] == [8, 7]
+
+
+def test_trained_union_uses_one_predict_call_and_best_ranked_duplicate_evidence() -> None:
+    builder = _builder()
+
+    class RecordingBooster:
+        def __init__(self) -> None:
+            self.calls: list[tuple[list[list[float]], int]] = []
+
+        def predict(self, rows: list[list[float]], *, num_threads: int) -> list[float]:
+            self.calls.append((rows, num_threads))
+            return [0.4, 0.8, 0.4]
+
+    booster = RecordingBooster()
+    classifier = LearnedHybridFusion(
+        query_mode="known_user",
+        retriever_bank=builder.retriever_bank,
+        feature_names=builder.feature_names,
+        feature_schema=builder.feature_schema,
+        training_status="trained",
+        training_metadata={},
+        _booster=booster,
+    )
+    pools = {
+        "popularity": (
+            Candidate(movie_id=20, score=1.0, rank=3),
+            Candidate(movie_id=21, score=2.0, rank=1),
+            Candidate(movie_id=20, score=3.0, rank=2),
+        ),
+        "itemknn": (Candidate(movie_id=22, score=0.5, rank=1),),
+        "multivae": (),
+        "lightgcn": (),
+    }
+
+    ranked = rank_lhf_union(classifier, builder, pools, (10, 10), top_n=3)
+
+    assert [(candidate.movie_id, candidate.score, candidate.rank) for candidate in ranked] == [
+        (21, 0.8, 1),
+        (20, 0.4, 2),
+        (22, 0.4, 3),
+    ]
+    assert booster.calls == [
+        ([list(builder.features_for(movie_id, pools, (10, 10))) for movie_id in (20, 21, 22)], 1)
+    ]
+    assert booster.calls[0][0][0][:3] == [1.0, 2.0, 3.0]
+
+    training_rows = build_lhf_training_rows(
+        EvaluationCohort(
+            queries=(EvaluationQuery(subject_id=1, history=(10, 10), gold_movie_id=20),)
+        ),
+        {1: pools},
+        builder,
+    )
+    assert [(row.movie_id, row.features) for row in training_rows] == [
+        (movie_id, builder.features_for(movie_id, pools, (10, 10))) for movie_id in (20, 21, 22)
+    ]
