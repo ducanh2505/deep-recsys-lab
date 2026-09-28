@@ -190,6 +190,23 @@ Kubernetes deployment, public hosting, frontend app, or interactive dashboard. `
 available for the original single-50% lifecycle smoke path; use `rolling` for the complete
 portfolio report and three-mode latency evidence.
 
+## Run the Known-User paper-style benchmark
+
+This separate MovieLens 20M run applies the LightGCN/NGCF Known-User protocol: ratings of at
+least 4.0, iterative 10-core filtering, deterministic per-Subject 80/20 train/test splits, and
+validation reserved from the training portion. Popularity ranks every Movie in the final
+training-visible catalog after excluding each Subject's training history. The structured JSON
+report records macro Recall/NDCG at 10, 20, 50, and 100, cold-item exclusions, split fingerprints,
+and source provenance. It does not start Kafka and must be read separately from the chronological
+rolling report.
+
+```bash
+uv run movie-recsys known-user-benchmark \
+  --cache var/datasets \
+  --output artifacts/paper-known-user/report.json \
+  --seed 42
+```
+
 ## Run the full MovieLens 20M profile
 
 The full command verifies all 20,000,263 source ratings, then replays them through Kafka in

@@ -13,6 +13,7 @@ from .lifecycle import run_fast_lifecycle
 from .lightgcn import LightGCNConfig
 from .movielens import prepare_movielens_20m
 from .multivae import MultVAEConfig
+from .paper_benchmark import run_known_user_benchmark, write_known_user_benchmark_report
 from .rolling import run_rolling_lifecycle
 
 app = typer.Typer(add_completion=False, help="Movie recommender lifecycle commands.")
@@ -119,6 +120,24 @@ def full(
     typer.echo(f"Active 100% Serving Artifact: {result.artifact_path}")
     typer.echo(f"Latency benchmark: {result.latency_benchmark_path}")
     typer.echo(f"Static report: {result.report_path}")
+
+
+@app.command("known-user-benchmark")
+def known_user_benchmark(
+    output: Annotated[
+        Path, typer.Option(help="Path for the structured Known-User benchmark report.")
+    ] = Path("artifacts/paper-known-user/report.json"),
+    cache: Annotated[Path, typer.Option(help="Ignored MovieLens cache directory.")] = Path(
+        "var/datasets"
+    ),
+    seed: Annotated[int, typer.Option(help="Deterministic per-Subject split seed.")] = 42,
+) -> None:
+    """Run the separate LightGCN/NGCF Known-User paper-style benchmark."""
+
+    source = prepare_movielens_20m(cache)
+    benchmark = run_known_user_benchmark(source, seed=seed)
+    report_path = write_known_user_benchmark_report(benchmark, output)
+    typer.echo(f"Known-User benchmark report: {report_path}")
 
 
 @app.command("serve")
