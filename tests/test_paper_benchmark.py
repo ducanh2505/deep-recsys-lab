@@ -136,7 +136,7 @@ def test_known_user_run_filters_positive_10core_and_reproduces_splits() -> None:
     assert reproducibility["split_seed"] == 42
     assert reproducibility["split_algorithm"] == "sha256-ranked-per-subject-v1"
     assert reproducibility["subject_cohort_cap"] is None
-    assert reproducibility["candidate_catalog_source"] == "final_training_interactions"
+    assert reproducibility["training_catalog_source"] == "final_training_interactions"
     assert report["source"]["input_event_fingerprint_sha256"]
     assert report["source"] == replay.to_dict()["source"]
 
@@ -174,9 +174,7 @@ def test_known_user_report_writer_persists_structured_reproducible_results(
     assert saved_report["counts"]["evaluation_query_count"] == 10
     assert saved_report["exclusions"]["test_gold_movie_count_missing_from_training_catalog"] == 19
     assert saved_report["metrics"]["Recall@100"] == 1.0
-    assert saved_report["training_candidate_catalog_movie_ids"] == sorted(
-        result.candidate_catalog
-    )
+    assert saved_report["training_catalog_movie_ids"] == sorted(result.training_catalog)
     assert saved_report["evaluation"]["sampled_negatives"] is False
     assert saved_report["evaluation"]["synthetic_gold_insertion"] is False
 

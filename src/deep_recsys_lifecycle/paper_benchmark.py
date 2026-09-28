@@ -31,7 +31,7 @@ class KnownUserBenchmarkResult:
     report: Mapping[str, object]
     split_by_subject: Mapping[int, KnownUserSubjectSplit]
     gold_sets: Mapping[int, tuple[int, ...]]
-    candidate_catalog: frozenset[int]
+    training_catalog: frozenset[int]
 
     def to_dict(self) -> dict[str, object]:
         return dict(self.report)
@@ -182,7 +182,9 @@ def run_known_user_benchmark(
             "input_event_fingerprint_sha256": input_fingerprint,
         },
         "evaluation": {
-            "candidate_universe": "complete final training-visible catalog",
+            "candidate_universe": (
+                "complete final training catalog after Subject history exclusion"
+            ),
             "history_exclusion": "final training interactions for the Subject",
             "sampled_negatives": False,
             "synthetic_gold_insertion": False,
@@ -203,7 +205,7 @@ def run_known_user_benchmark(
             "validation_fraction_of_train": VALIDATION_FRACTION_OF_TRAIN,
             "metric_cutoffs": list(METRIC_CUTOFFS),
             "subject_cohort_cap": None,
-            "candidate_catalog_source": "final_training_interactions",
+            "training_catalog_source": "final_training_interactions",
             "history_source": "final_training_interactions",
             "popularity_tie_break": "movie_id_ascending",
             "split_membership_sha256": {
@@ -226,7 +228,7 @@ def run_known_user_benchmark(
             "eligible_test_gold_movie_count": sum(map(len, gold_sets.values())),
             "training_catalog_movie_count": len(catalog),
         },
-        "training_candidate_catalog_movie_ids": sorted(catalog),
+        "training_catalog_movie_ids": sorted(catalog),
         "exclusions": {
             "positive_interaction_count_removed_by_10_core": (
                 positive_before_k_core_count - len(retained)
@@ -246,7 +248,7 @@ def run_known_user_benchmark(
         report=report,
         split_by_subject=split_by_subject,
         gold_sets=gold_sets,
-        candidate_catalog=catalog,
+        training_catalog=catalog,
     )
 
 
@@ -277,7 +279,7 @@ def _known_user_metrics(
     popularity: PopularityRetriever,
     splits: Mapping[int, KnownUserSubjectSplit],
     gold_sets: Mapping[int, tuple[int, ...]],
-    candidate_catalog: frozenset[int],
+    training_catalog: frozenset[int],
 ) -> dict[str, int | float | None]:
     recall_totals = {cutoff: 0.0 for cutoff in METRIC_CUTOFFS}
     ndcg_totals = {cutoff: 0.0 for cutoff in METRIC_CUTOFFS}
@@ -333,8 +335,8 @@ def _known_user_metrics(
         },
         "QueryRetrievalCoverage@100": covered_queries / divisor if query_count else 0.0,
         "CatalogCoverage@100": (
-            len(recommended_movies) / len(candidate_catalog)
-            if candidate_catalog and query_count
+            len(recommended_movies) / len(training_catalog)
+            if training_catalog and query_count
             else None
         ),
     }
