@@ -4,7 +4,7 @@ import socket
 import subprocess
 import time
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 
@@ -23,6 +23,7 @@ from .paper_known_user_fusion import (
     run_known_user_hybrid_benchmark,
     write_known_user_hybrid_report,
 )
+from .paper_screening import PaperScreenWorkspace, ScreenMode
 from .rolling import run_rolling_lifecycle
 
 app = typer.Typer(add_completion=False, help="Movie recommender lifecycle commands.")
@@ -194,6 +195,111 @@ def history_only_benchmark(
     benchmark = run_history_only_benchmark(source, config=config, evaluate_test=False)
     report_path = write_history_only_benchmark_report(benchmark, output)
     typer.echo(f"History-Only benchmark report: {report_path}")
+
+
+def _paper_mode(value: str) -> ScreenMode:
+    if value not in {"known_user", "history_only"}:
+        raise typer.BadParameter("mode must be known_user or history_only")
+    return cast(ScreenMode, value)
+
+
+@app.command("paper-screen-plan")
+def paper_screen_plan(
+    root: Annotated[Path, typer.Option(help="New write-once screening directory.")],
+    source_sha256: Annotated[str, typer.Option(help="Exact MovieLens source checksum.")],
+) -> None:
+    """Preregister the validation-only one-factor plan before opening outcomes."""
+
+    workspace = PaperScreenWorkspace.create(root, source_sha256=source_sha256)
+    typer.echo(f"Screen plan: {workspace.root / 'plan.json'}")
+
+
+@app.command("paper-screen-baseline")
+def paper_screen_baseline(
+    root: Annotated[Path, typer.Option(help="Existing screening directory.")],
+    mode: Annotated[str, typer.Option(help="known_user or history_only")],
+) -> None:
+    """Register a mode's fixed baseline before running it."""
+
+    run_id = PaperScreenWorkspace(root).register_baseline(_paper_mode(mode))
+    typer.echo(f"Registered {run_id}")
+
+
+@app.command("paper-screen-variant")
+def paper_screen_variant(
+    root: Annotated[Path, typer.Option(help="Existing screening directory.")],
+    mode: Annotated[str, typer.Option(help="known_user or history_only")],
+    axis: Annotated[str, typer.Option(help="Axis name from plan.json.")],
+    alternative: Annotated[int, typer.Option(help="Preregistered alternative: 0 or 1.")],
+    reference: Annotated[str, typer.Option(help="Completed same-mode reference run ID.")],
+    run_id: Annotated[str, typer.Option(help="Unique run ID.")],
+) -> None:
+    """Register one exact factor value before viewing its validation outcome."""
+
+    workspace = PaperScreenWorkspace(root)
+    resolved_mode = _paper_mode(mode)
+    configuration = workspace.planned_configuration(
+        mode=resolved_mode,
+        axis_name=axis,
+        alternative_index=alternative,
+        reference_run_id=reference,
+    )
+    workspace.register_variant(
+        run_id=run_id,
+        mode=resolved_mode,
+        axis_name=axis,
+        alternative_index=alternative,
+        reference_run_id=reference,
+        configuration=configuration,
+    )
+    typer.echo(f"Registered {run_id}")
+
+
+@app.command("paper-screen-run")
+def paper_screen_run(
+    root: Annotated[Path, typer.Option(help="Existing screening directory.")],
+    run_id: Annotated[str, typer.Option(help="Registered run ID.")],
+    cache: Annotated[Path, typer.Option(help="MovieLens dataset directory.")] = Path(
+        "var/datasets"
+    ),
+    reference_report: Annotated[
+        Path | None, typer.Option(help="Archived #47 report, required for a full-data baseline.")
+    ] = None,
+) -> None:
+    """Run the complete training pipeline and record validation evidence only."""
+
+    workspace = PaperScreenWorkspace(root)
+    source = prepare_movielens_20m(cache)
+    record = workspace.run_registered(
+        run_id,
+        source,
+        reference_report_path=reference_report,
+    )
+    typer.echo(f"Validation run: {workspace.root / 'runs' / (str(record['run_id']) + '.json')}")
+
+
+@app.command("paper-screen-skip")
+def paper_screen_skip(
+    root: Annotated[Path, typer.Option(help="Existing screening directory.")],
+    mode: Annotated[str, typer.Option(help="known_user or history_only")],
+    axis: Annotated[str, typer.Option(help="Preregistered axis name.")],
+    reason: Annotated[str, typer.Option(help="Measured-loss reason for skipping.")],
+) -> None:
+    """Record why an axis was not run before freezing the selection."""
+
+    PaperScreenWorkspace(root).skip_axis(_paper_mode(mode), axis, reason)
+    typer.echo(f"Skipped {mode}/{axis}")
+
+
+@app.command("paper-screen-freeze")
+def paper_screen_freeze(
+    root: Annotated[Path, typer.Option(help="Existing screening directory.")],
+) -> None:
+    """Select by paired validation evidence and durably freeze both modes."""
+
+    workspace = PaperScreenWorkspace(root)
+    workspace.select_and_freeze()
+    typer.echo(f"Selection freeze: {workspace.root / 'freeze.json'}")
 
 
 @app.command("serve")

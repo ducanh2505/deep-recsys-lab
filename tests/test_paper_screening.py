@@ -250,8 +250,12 @@ def test_real_known_user_pipeline_refits_fusion_on_the_same_validation_cohort(
     )
     baseline_id = screen.register_baseline("known_user")
     baseline = screen.run_registered(baseline_id, events)
-    variant_config = deepcopy(baseline_config)
-    variant_config["multivae"]["dropout"] = 0.2
+    variant_config = screen.planned_configuration(
+        mode="known_user",
+        axis_name="multivae_dropout",
+        alternative_index=0,
+        reference_run_id=baseline_id,
+    )
     screen.register_variant(
         run_id="known-dropout-0",
         mode="known_user",

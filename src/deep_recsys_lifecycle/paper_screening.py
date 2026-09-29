@@ -13,6 +13,7 @@ import json
 import os
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -472,6 +473,17 @@ def _axis_value(configuration: Mapping[str, object], paths: tuple[str, ...]) -> 
     }
 
 
+def _put_path(configuration: dict[str, object], path: str, value: object) -> None:
+    current: dict[str, object] = configuration
+    parts = path.split(".")
+    for part in parts[:-1]:
+        nested = current.setdefault(part, {})
+        if not isinstance(nested, dict):
+            raise ValueError(f"planned factor cannot replace non-object path {path}")
+        current = nested
+    current[parts[-1]] = value
+
+
 def default_screen_runner(
     events: Iterable[RatingEvent], mode: ScreenMode, configuration: Mapping[str, object]
 ) -> Mapping[str, object]:
@@ -616,6 +628,34 @@ class PaperScreenWorkspace:
         self._register(run_id, mode, "baseline", None, None, config)
         return run_id
 
+    def planned_configuration(
+        self,
+        *,
+        mode: ScreenMode,
+        axis_name: str,
+        alternative_index: int,
+        reference_run_id: str,
+    ) -> dict[str, object]:
+        """Return the exact preregistered one-factor edit to a completed reference."""
+
+        if alternative_index not in (0, 1):
+            raise ValueError("alternative index must be zero or one")
+        axes = _mapping(self.plan()["axes"], "axes")[mode]
+        axis = next((item for item in axes if item["name"] == axis_name), None)
+        if axis is None:
+            raise ValueError(f"unknown axis: {axis_name}")
+        reference = self._registration(reference_run_id)
+        if reference["mode"] != mode or not self._run_path(reference_run_id).exists():
+            raise ValueError("factor reference must be a completed run in the same mode")
+        configuration = deepcopy(reference["configuration"])
+        paths = tuple(axis["paths"])
+        alternative = axis["alternatives"][alternative_index]
+        for path in paths:
+            name = "checkpoint" if path.endswith("_checkpoint") else path.rsplit(".", 1)[-1]
+            value = alternative if len(paths) == 1 else alternative[name]
+            _put_path(configuration, path, value)
+        return cast(dict[str, object], configuration)
+
     def register_variant(
         self,
         *,
@@ -745,6 +785,14 @@ class PaperScreenWorkspace:
         config = _mapping(registration["configuration"], "configuration")
         if _digest(config) != registration["configuration_sha256"]:
             raise ValueError("registered configuration fingerprint mismatch")
+        if registration["axis"] == "baseline" and self.plan()["source_sha256"] is not None:
+            if reference_report_path is None:
+                raise ValueError("full-data baseline needs the archived #47 validation report")
+            if not reference_report_path.is_file():
+                raise FileNotFoundError(reference_report_path)
+        dataset_checksum = getattr(events, "dataset_checksum", None)
+        if dataset_checksum != self.plan()["source_sha256"]:
+            raise ValueError("event source checksum differs from the registered screen plan")
         report = runner(events, mode, config)
         if report.get("test_status") not in (None, "sealed"):
             raise ValueError("runner exposed test status")
