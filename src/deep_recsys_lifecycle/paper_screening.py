@@ -10,6 +10,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import math
 import os
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
@@ -22,7 +23,9 @@ from .history_only_benchmark import HistoryOnlyBenchmarkConfig, run_history_only
 from .lightgcn import LightGCNConfig
 from .models import RatingEvent
 from .multivae import MultVAEConfig
+from .paper_fit_cache import FitCache
 from .paper_known_user_fusion import KnownUserHybridConfig, run_known_user_hybrid_benchmark
+from .paper_pool_cache import PoolCache
 
 ScreenMode = Literal["known_user", "history_only"]
 _MODES: tuple[ScreenMode, ScreenMode] = ("known_user", "history_only")
@@ -38,6 +41,20 @@ class FrozenTestAccess:
     mode: ScreenMode
     freeze_path: Path | None = None
 
+    def preflight(self, *, mode: ScreenMode, source_sha256: str | None) -> None:
+        """Reject an absent or mismatched freeze before a test cohort is prepared."""
+
+        if mode != self.mode:
+            raise ValueError("test access Query mode differs")
+        if self.freeze_path is None:
+            if source_sha256 is not None:
+                raise ValueError("fixture receipt cannot open MovieLens test")
+            return
+        frozen = PaperScreenWorkspace(self.freeze_path.parent).require_frozen_selection()
+        entry = _mapping(_mapping(frozen["modes"], "frozen modes")[mode], "frozen mode")
+        if source_sha256 != _mapping(entry["source"], "source")["dataset_sha256"]:
+            raise ValueError("test source differs from frozen selection")
+
     def require(
         self,
         *,
@@ -47,11 +64,8 @@ class FrozenTestAccess:
         validation_cohort_sha256: str,
         test_membership_sha256: str,
     ) -> None:
-        if mode != self.mode:
-            raise ValueError("test access Query mode differs")
+        self.preflight(mode=mode, source_sha256=source_sha256)
         if self.freeze_path is None:
-            if source_sha256 is not None:
-                raise ValueError("fixture receipt cannot open MovieLens test")
             return
         frozen = PaperScreenWorkspace(self.freeze_path.parent).require_frozen_selection()
         entry = _mapping(_mapping(frozen["modes"], "frozen modes")[mode], "frozen mode")
@@ -439,7 +453,68 @@ def _summary(report: Mapping[str, object], mode: ScreenMode) -> dict[str, object
         "runtime": report["runtime"],
         "run_identity": report["run_identity"],
         "source": report["source"],
+        "screen_cache": report.get("screen_cache"),
+        "code_fingerprint": (
+            _mapping(report["screen_cache"], "screen cache").get("code_fingerprint")
+            if isinstance(report.get("screen_cache"), Mapping)
+            and _mapping(report["screen_cache"], "screen cache").get("code_fingerprint")
+            else (
+                report.get("package_source_sha256")
+                if mode == "known_user"
+                else _mapping(report["reproducibility"], "reproducibility").get(
+                    "implementation_sha256"
+                )
+            )
+        ),
     }
+
+
+def _effective_configuration(report: Mapping[str, object], mode: ScreenMode) -> dict[str, object]:
+    if mode == "known_user":
+        return dict(_mapping(report["configuration"], "effective Known-User configuration"))
+    reproduction = _mapping(report["reproducibility"], "History-Only reproducibility")
+    return {
+        "seed": reproduction["split_seed"],
+        "validation_subject_count": reproduction["validation_subject_count"],
+        "test_subject_count": reproduction["test_subject_count"],
+        "inner_held_out_fraction": reproduction["inner_held_out_fraction"],
+        "candidate_pool_limit": reproduction["candidate_pool_limit_per_source"],
+        "fusion_negative_rows_per_query": reproduction["fusion_negative_rows_per_query"],
+        "multivae_config": reproduction["multivae_config"],
+        "multivae_device_preference": reproduction["multivae_device_preference"],
+        "capture_evidence": reproduction["capture_evidence"],
+    }
+
+
+def _validate_subjects(
+    report: Mapping[str, object],
+    mode: ScreenMode,
+    subjects: Mapping[str, object],
+    metrics: Mapping[str, object],
+) -> None:
+    if mode == "known_user":
+        gold = _mapping(report["validation_gold_sets_by_subject"], "validation Gold Sets")
+        expected_ids = {subject_id for subject_id, movies in gold.items() if movies}
+    else:
+        held_out = _mapping(report["held_out_subject_splits"], "held-out splits")
+        validation = _mapping(held_out["validation"], "validation splits")
+        expected_ids = {
+            subject_id
+            for subject_id, split in validation.items()
+            if _mapping(split, "Subject split")["eligible_gold_movie_ids"]
+        }
+    if (
+        not expected_ids
+        or set(subjects) != expected_ids
+        or metrics["query_count"] != len(expected_ids)
+    ):
+        raise ValueError("per-Subject rows differ from eligible validation Gold Sets")
+    for name in ("Recall@100", "NDCG@20"):
+        average = math.fsum(
+            float(_mapping(row, "Subject metrics")[name]) for row in subjects.values()
+        ) / len(subjects)
+        if not math.isclose(average, float(cast(float, metrics[name])), rel_tol=0.0, abs_tol=1e-9):
+            raise ValueError(f"per-Subject {name} differs from final macro metric")
 
 
 def _nested_changes(left: object, right: object, prefix: str = "") -> set[str]:
@@ -485,7 +560,8 @@ def _put_path(configuration: dict[str, object], path: str, value: object) -> Non
 
 
 def default_screen_runner(
-    events: Iterable[RatingEvent], mode: ScreenMode, configuration: Mapping[str, object]
+    events: Iterable[RatingEvent], mode: ScreenMode, configuration: Mapping[str, object],
+    *, fit_cache: FitCache | None = None, pool_cache: PoolCache | None = None,
 ) -> Mapping[str, object]:
     """Run the complete existing train-only fusion pipeline on validation only."""
 
@@ -519,7 +595,9 @@ def default_screen_runner(
             multivae=multivae,
             lightgcn=lightgcn,
         )
-        return run_known_user_hybrid_benchmark(events, config=known_config).to_dict()
+        return run_known_user_hybrid_benchmark(
+            events, config=known_config, fit_cache=fit_cache, pool_cache=pool_cache
+        ).to_dict()
     allowed = {
         "seed",
         "validation_subject_count",
@@ -547,7 +625,10 @@ def default_screen_runner(
         multivae_config=multivae,
         multivae_device_preference=cast(str, configuration["multivae_device_preference"]),
     )
-    return run_history_only_benchmark(events, config=history_config, evaluate_test=False).to_dict()
+    return run_history_only_benchmark(
+        events, config=history_config, evaluate_test=False,
+        fit_cache=fit_cache, pool_cache=pool_cache,
+    ).to_dict()
 
 
 def baseline_configuration(mode: ScreenMode) -> dict[str, object]:
@@ -688,6 +769,13 @@ class PaperScreenWorkspace:
         actual = _axis_value(configuration, tuple(axis["paths"]))
         if actual != expected:
             raise ValueError(f"{axis_name} must use preregistered alternative {alternative_index}")
+        for path in (self.root / "registrations").glob("*.json"):
+            earlier = _read_object(path)
+            if earlier["mode"] == mode and earlier["axis"] == axis_name:
+                if earlier["reference_run_id"] != reference_run_id:
+                    raise ValueError("both axis alternatives require the same completed reference")
+                if earlier["alternative_index"] == alternative_index:
+                    raise ValueError("axis alternative was already registered")
         self._register(run_id, mode, axis_name, alternative_index, reference_run_id, configuration)
 
     def register_additional(
@@ -803,12 +891,16 @@ class PaperScreenWorkspace:
             raise ValueError("runner exposed test metrics")
         if mode == "history_only" and "test" in _mapping(report["metrics"], "metrics"):
             raise ValueError("runner exposed History-Only test metrics")
+        if _effective_configuration(report, mode) != config:
+            raise ValueError("runner effective configuration differs from preregistration")
         seal = _validation_seal(report, mode)
         if _mapping(seal["source"], "source")["dataset_sha256"] != self.plan()["source_sha256"]:
             raise ValueError("run source checksum differs from plan")
         if seal["split_seed"] != self.plan()["seed"]:
             raise ValueError("run seed differs from plan")
         summary = _summary(report, mode)
+        subjects = _subject_metrics(report, mode)
+        _validate_subjects(report, mode, subjects, _mapping(summary["metrics"], "final metrics"))
         if (
             registration["axis"] == "baseline"
             and _mapping(seal["source"], "source")["dataset_sha256"] is not None
@@ -816,17 +908,26 @@ class PaperScreenWorkspace:
             if reference_report_path is None:
                 raise ValueError("full-data baseline needs the archived #47 validation report")
             reference = _read_object(reference_report_path)
+            reference_summary = _summary(reference, mode)
             if (
                 _validation_seal(reference, mode) != seal
-                or _summary(reference, mode)["metrics"] != summary["metrics"]
+                or any(
+                    reference_summary[key] != summary[key]
+                    for key in ("metrics", "source_pools", "oracle_union", "gold_loss")
+                )
+                or _subject_metrics(reference, mode) != subjects
             ):
-                raise ValueError("baseline differs from the archived #47 cohort or macro metrics")
+                raise ValueError("baseline differs from the archived #47 validation evidence")
             verification_path = self.root / "baseline_verification" / f"{mode}.json"
             verification = {
                 "reference_report": str(reference_report_path.resolve()),
                 "reference_report_sha256": _file_sha256(reference_report_path),
                 "cohort_sha256": seal["validation_cohort_sha256"],
                 "macro_metrics": summary["metrics"],
+                "source_pools_sha256": _digest(summary["source_pools"]),
+                "oracle_union_sha256": _digest(summary["oracle_union"]),
+                "gold_loss_sha256": _digest(summary["gold_loss"]),
+                "per_subject_sha256": _digest(subjects),
             }
             if verification_path.exists():
                 if _read_object(verification_path) != verification:
@@ -841,20 +942,29 @@ class PaperScreenWorkspace:
             _write_once(seal_path, seal)
         else:
             raise ValueError("baseline must establish the frozen cohort first")
-        subjects = _subject_metrics(report, mode)
+        baseline_path = self._run_path(f"{mode}-baseline")
+        if registration["axis"] != "baseline" and baseline_path.exists():
+            baseline = _read_object(baseline_path)
+            if baseline["code_fingerprint"] != summary["code_fingerprint"]:
+                raise ValueError("screen implementation changed after baseline")
         subject_path = self.root / "subjects" / f"{run_id}.json.gz"
         subject_path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, name = tempfile.mkstemp(prefix=f".{run_id}.", dir=subject_path.parent)
-        temp_path = Path(name)
-        try:
-            with os.fdopen(descriptor, "wb") as raw:
-                with gzip.open(raw, "wt", encoding="utf-8") as handle:
-                    json.dump(subjects, handle, sort_keys=True, separators=(",", ":"))
-                raw.flush()
-                os.fsync(raw.fileno())
-            _commit_temp(temp_path, subject_path)
-        finally:
-            temp_path.unlink(missing_ok=True)
+        if subject_path.exists():
+            with gzip.open(subject_path, "rt", encoding="utf-8") as handle:
+                if json.load(handle) != subjects:
+                    raise ValueError("interrupted run's Subject evidence differs on retry")
+        else:
+            descriptor, name = tempfile.mkstemp(prefix=f".{run_id}.", dir=subject_path.parent)
+            temp_path = Path(name)
+            try:
+                with os.fdopen(descriptor, "wb") as raw:
+                    with gzip.open(raw, "wt", encoding="utf-8") as handle:
+                        json.dump(subjects, handle, sort_keys=True, separators=(",", ":"))
+                    raw.flush()
+                    os.fsync(raw.fileno())
+                _commit_temp(temp_path, subject_path)
+            finally:
+                temp_path.unlink(missing_ok=True)
         record = {
             "run_id": run_id,
             "mode": mode,
@@ -875,9 +985,76 @@ class PaperScreenWorkspace:
         records: dict[str, dict[str, Any]] = {}
         for path in sorted((self.root / "runs").glob("*.json")):
             record = _read_object(path)
+            self._validate_run_record(path, record)
             if record["mode"] == mode:
                 records[cast(str, record["run_id"])] = record
         return records
+
+    def _validate_run_record(self, path: Path, record: Mapping[str, object]) -> None:
+        run_id = record["run_id"]
+        if run_id != path.stem:
+            raise ValueError("run record path differs from its ID")
+        registration = self._registration(run_id)
+        cohort = _read_object(self.root / "cohorts" / f"{record['mode']}.json")
+        if (
+            registration["plan_sha256"] != self.plan()["plan_sha256"]
+            or registration["configuration_sha256"] != _digest(registration["configuration"])
+            or record["plan_sha256"] != registration["plan_sha256"]
+            or record["mode"] != registration["mode"]
+            or record["axis"] != registration["axis"]
+            or record["reference_run_id"] != registration["reference_run_id"]
+            or record["configuration"] != registration["configuration"]
+            or record["configuration_sha256"] != registration["configuration_sha256"]
+            or record["validation_cohort_sha256"] != cohort["validation_cohort_sha256"]
+            or record["source"] != cohort["source"]
+        ):
+            raise ValueError("completed run differs from registration or cohort")
+        if registration["axis"] != "baseline":
+            baseline_path = self._run_path(f"{record['mode']}-baseline")
+            baseline = _read_object(baseline_path)
+            if record["code_fingerprint"] != baseline["code_fingerprint"]:
+                raise ValueError("completed run implementation differs from baseline")
+        if registration["axis"] not in {"baseline", "adaptive"}:
+            mode = cast(ScreenMode, registration["mode"])
+            axis = next(
+                item for item in _mapping(self.plan()["axes"], "axes")[mode]
+                if item["name"] == registration["axis"]
+            )
+            reference = self._registration(cast(str, registration["reference_run_id"]))
+            changed = _nested_changes(reference["configuration"], record["configuration"])
+            if (
+                not changed
+                or not changed <= set(axis["paths"])
+                or _axis_value(
+                    _mapping(record["configuration"], "run configuration"), tuple(axis["paths"])
+                ) != axis["alternatives"][registration["alternative_index"]]
+            ):
+                raise ValueError("completed run differs from preregistered factor")
+        subject_relative_path = f"subjects/{run_id}.json.gz"
+        if record["per_subject_path"] != subject_relative_path:
+            raise ValueError("run Subject evidence path differs")
+        subject_path = self.root / subject_relative_path
+        if _file_sha256(subject_path) != record["per_subject_sha256"]:
+            raise ValueError("run Subject evidence fingerprint mismatch")
+        subjects = self.validation_subjects(run_id)
+        final = _mapping(record["metrics"], "run metrics")
+        if final["query_count"] != len(subjects):
+            raise ValueError("completed run Subject count differs from final metrics")
+        for metric in ("Recall@100", "NDCG@20"):
+            average = math.fsum(row[metric] for row in subjects.values()) / len(subjects)
+            if not math.isclose(
+                average, float(final[metric]), rel_tol=0.0, abs_tol=1e-9
+            ):
+                raise ValueError("completed run Subjects differ from final metrics")
+        if registration["axis"] == "baseline" and self.plan()["source_sha256"] is not None:
+            receipt = _read_object(self.root / "baseline_verification" / f"{record['mode']}.json")
+            if (
+                receipt["cohort_sha256"] != record["validation_cohort_sha256"]
+                or receipt["macro_metrics"] != record["metrics"]
+                or receipt["per_subject_sha256"]
+                != _digest(subjects)
+            ):
+                raise ValueError("full baseline verification receipt differs")
 
     def validation_subjects(self, run_id: str) -> dict[str, dict[str, float]]:
         record = _read_object(self._run_path(run_id))
@@ -932,8 +1109,12 @@ class PaperScreenWorkspace:
             cohort = _read_object(self.root / "cohorts" / f"{mode}.json")
             frozen_modes[mode] = {
                 "baseline_run_id": baseline_id,
+                "baseline_run_sha256": _file_sha256(self._run_path(baseline_id)),
+                "baseline_subject_sha256": baseline["per_subject_sha256"],
                 "baseline_configuration_sha256": baseline["configuration_sha256"],
                 "selected_run_id": selected_id,
+                "selected_run_sha256": _file_sha256(self._run_path(selected_id)),
+                "selected_subject_sha256": selected["per_subject_sha256"],
                 "selected_configuration": selected["configuration"],
                 "selected_configuration_sha256": selected["configuration_sha256"],
                 "validation_cohort_sha256": cohort["validation_cohort_sha256"],
@@ -973,10 +1154,18 @@ class PaperScreenWorkspace:
             if (
                 selected["configuration_sha256"] != entry["selected_configuration_sha256"]
                 or baseline["configuration_sha256"] != entry["baseline_configuration_sha256"]
+                or _file_sha256(self._run_path(cast(str, entry["selected_run_id"])))
+                != entry["selected_run_sha256"]
+                or _file_sha256(self._run_path(cast(str, entry["baseline_run_id"])))
+                != entry["baseline_run_sha256"]
+                or selected["per_subject_sha256"] != entry["selected_subject_sha256"]
+                or baseline["per_subject_sha256"] != entry["baseline_subject_sha256"]
                 or cohort["validation_cohort_sha256"] != entry["validation_cohort_sha256"]
                 or cohort["test_membership_sha256"] != entry["sealed_test_membership_sha256"]
             ):
                 raise ValueError("frozen run or cohort changed")
+            self._validate_run_record(self._run_path(cast(str, entry["selected_run_id"])), selected)
+            self._validate_run_record(self._run_path(cast(str, entry["baseline_run_id"])), baseline)
         return frozen
 
     def test_access(self, mode: ScreenMode) -> FrozenTestAccess:

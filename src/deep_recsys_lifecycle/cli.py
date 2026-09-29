@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import subprocess
 import time
+from functools import partial
 from pathlib import Path
 from typing import Annotated, cast
 
@@ -18,12 +19,14 @@ from .lifecycle import run_fast_lifecycle
 from .lightgcn import LightGCNConfig
 from .movielens import prepare_movielens_20m
 from .multivae import MultVAEConfig
+from .paper_fit_cache import FitCache
 from .paper_known_user_fusion import (
     KnownUserHybridConfig,
     run_known_user_hybrid_benchmark,
     write_known_user_hybrid_report,
 )
-from .paper_screening import PaperScreenWorkspace, ScreenMode
+from .paper_pool_cache import PoolCache
+from .paper_screening import PaperScreenWorkspace, ScreenMode, default_screen_runner
 from .rolling import run_rolling_lifecycle
 
 app = typer.Typer(add_completion=False, help="Movie recommender lifecycle commands.")
@@ -273,6 +276,11 @@ def paper_screen_run(
     record = workspace.run_registered(
         run_id,
         source,
+        runner=partial(
+            default_screen_runner,
+            fit_cache=FitCache(root / "fit-cache"),
+            pool_cache=PoolCache(root / "pool-cache"),
+        ),
         reference_report_path=reference_report,
     )
     typer.echo(f"Validation run: {workspace.root / 'runs' / (str(record['run_id']) + '.json')}")

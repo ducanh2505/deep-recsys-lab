@@ -5,6 +5,7 @@ import math
 from copy import deepcopy
 from dataclasses import fields, replace
 from hashlib import sha256
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -20,11 +21,35 @@ from deep_recsys_lifecycle.history_only_benchmark import (
     write_history_only_benchmark_report,
 )
 from deep_recsys_lifecycle.models import Candidate, RatingEvent
+from deep_recsys_lifecycle.paper_fit_cache import FitCache
+from deep_recsys_lifecycle.paper_pool_cache import PoolCache
 from deep_recsys_lifecycle.paper_screening import fixture_test_access
 
 _SMALL_CONFIG = HistoryOnlyBenchmarkConfig(
     seed=42, validation_subject_count=2, test_subject_count=2
 )
+
+
+def test_history_only_validation_cache_replays_exact_metrics(tmp_path: Path) -> None:
+    fit = FitCache(tmp_path / "fit", max_bytes=100_000_000, min_free_bytes=0)
+    pools = PoolCache(
+        tmp_path / "pools", max_bytes=100_000_000, min_free_bytes=0, shard_queries=4
+    )
+    first = run_history_only_benchmark(
+        _public_events(), config=_SMALL_CONFIG, fit_cache=fit, pool_cache=pools
+    ).to_dict()
+    replay = run_history_only_benchmark(
+        _public_events(), config=_SMALL_CONFIG, fit_cache=fit, pool_cache=pools
+    ).to_dict()
+    assert first["metrics"] == replay["metrics"]
+    assert first["diagnostics"] == replay["diagnostics"]
+    assert replay["screen_cache"]["fit"]["hits"] == 6
+    assert all(
+        info["cache_hit"]
+        for partition in replay["screen_cache"]["pool_partitions"]
+        for info in partition["sources"].values()
+    )
+    assert replay["reproducibility"]["test_evaluated"] is False
 
 
 def _public_events(*, late_test_gold: bool = False) -> tuple[RatingEvent, ...]:

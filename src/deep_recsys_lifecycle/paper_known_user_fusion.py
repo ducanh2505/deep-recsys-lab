@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic
@@ -38,7 +38,10 @@ from .paper_benchmark import (
     _split_rank,
 )
 from .paper_diagnostics import PaperGoldDiagnostics
+from .paper_fit_cache import FitCache
 from .paper_measurements import peak_rss_bytes, run_identity, summarize_query_latency
+from .paper_pool_adapter import PartitionPoolStream, partition_pools, retriever_state_sha256
+from .paper_pool_cache import PoolCache, PoolQuery
 from .popularity import fit_popularity
 from .retriever import CandidateRetriever, candidate_pool_for_query, validate_candidate_pool_limit
 
@@ -321,28 +324,55 @@ def _inner_holdout(
 
 
 def _fit_bank(
-    events: Sequence[RatingEvent], config: KnownUserHybridConfig
+    events: Sequence[RatingEvent],
+    config: KnownUserHybridConfig,
+    *,
+    fit_cache: FitCache | None = None,
+    code_fingerprint: str = "",
 ) -> tuple[DataSnapshot, dict[str, CandidateRetriever]]:
     snapshot = DataSnapshot.from_events(tuple(events))
     interactions = tuple(PositiveInteraction.from_event(event) for event in snapshot.events)
     if not interactions:
         raise ValueError("Known-User hybrid requires non-empty training interactions")
+    def source_fit(
+        name: str,
+        source_config: Mapping[str, object],
+        fit: Callable[[], CandidateRetriever],
+    ) -> CandidateRetriever:
+        if fit_cache is None:
+            return fit()
+        return fit_cache.get_or_fit(
+            source=name,
+            snapshot=snapshot,
+            source_config=source_config,
+            seed=config.seed,
+            device="cpu",
+            code_fingerprint=code_fingerprint,
+            fit=fit,
+        )
+
     return snapshot, {
-        "popularity": fit_popularity(snapshot, interactions),
-        "itemknn": fit_itemknn(snapshot, interactions).to_serving(),
-        "multivae": fit_multivae(
-            snapshot,
-            interactions,
-            config=config.multivae,
-            seed=config.seed,
-            device_preference="cpu",
+        "popularity": source_fit(
+            "popularity", {"ranking": "positive_count"},
+            lambda: fit_popularity(snapshot, interactions),
         ),
-        "lightgcn": fit_lightgcn(
-            snapshot,
-            interactions,
-            config=config.lightgcn,
-            seed=config.seed,
-            device_preference="cpu",
+        "itemknn": source_fit(
+            "itemknn", {"similarity": "binary_cosine"},
+            lambda: fit_itemknn(snapshot, interactions).to_serving(),
+        ),
+        "multivae": source_fit(
+            "multivae", config.multivae.to_dict(),
+            lambda: fit_multivae(
+                snapshot, interactions, config=config.multivae,
+                seed=config.seed, device_preference="cpu",
+            ),
+        ),
+        "lightgcn": source_fit(
+            "lightgcn", config.lightgcn.to_dict(),
+            lambda: fit_lightgcn(
+                snapshot, interactions, config=config.lightgcn,
+                seed=config.seed, device_preference="cpu",
+            ),
         ),
     }
 
@@ -382,6 +412,53 @@ def _pools_for(
     }
 
 
+def _cached_partition(
+    pool_cache: PoolCache | None,
+    *,
+    partition: str,
+    cohort_fingerprint: str,
+    snapshot: DataSnapshot,
+    retrievers: Mapping[str, CandidateRetriever],
+    queries: Sequence[_GoldQuery],
+    config: KnownUserHybridConfig,
+    code_fingerprint: str,
+) -> PartitionPoolStream | None:
+    if pool_cache is None:
+        return None
+    return partition_pools(
+        pool_cache,
+        mode="known_user",
+        partition=partition,
+        cohort_fingerprint=cohort_fingerprint,
+        fit_fingerprint=snapshot.fingerprint,
+        code_fingerprint=code_fingerprint,
+        retrievers=retrievers,
+        source_configs={
+            "popularity": {"ranking": "positive_count"},
+            "itemknn": {"similarity": "binary_cosine"},
+            "multivae": config.multivae.to_dict(),
+            "lightgcn": config.lightgcn.to_dict(),
+        },
+        model_fingerprints={
+            name: retriever_state_sha256(retriever)
+            for name, retriever in retrievers.items()
+        },
+        seed=config.seed,
+        device_by_source={name: "cpu" for name in _BANK},
+        checkpoint_by_source={
+            name: "last" if name in {"multivae", "lightgcn"} else "not_applicable"
+            for name in _BANK
+        },
+        catalog_movie_ids=frozenset(event.movie_id for event in snapshot.events),
+        queries=tuple(
+            PoolQuery(query.subject_id, query.subject_id, query.history)
+            for query in queries
+            if query.gold_movie_ids
+        ),
+        depth=config.pool_limit,
+    )
+
+
 def _evaluate(
     queries: Iterable[_GoldQuery],
     retrievers: Mapping[str, CandidateRetriever],
@@ -389,6 +466,7 @@ def _evaluate(
     builder: FusionFeatureBuilder,
     catalog: frozenset[int],
     config: KnownUserHybridConfig,
+    pool_stream: PartitionPoolStream | None = None,
 ) -> tuple[
     dict[str, object],
     dict[int, tuple[int, ...]],
@@ -408,6 +486,7 @@ def _evaluate(
     subject_metrics: dict[int, Mapping[str, float]] = {}
     evidence: dict[int, Mapping[str, object]] = {}
     scoring_samples_ms: list[float] = []
+    cached_pools = iter(pool_stream) if pool_stream is not None else None
     for query in queries:
         if not query.gold_movie_ids:
             loss.observe(
@@ -420,7 +499,12 @@ def _evaluate(
             )
             continue
         scoring_started = monotonic()
-        pools = _pools_for(query, retrievers, config.pool_limit)
+        if cached_pools is None:
+            pools = _pools_for(query, retrievers, config.pool_limit)
+        else:
+            cached_query, pools = next(cached_pools)
+            if (cached_query.key, cached_query.history) != (query.subject_id, query.history):
+                raise ValueError("cached Known-User Query differs from validation Query")
         for name, pool in pools.items():
             sources[name].add(query.gold_movie_ids, tuple(item.movie_id for item in pool))
         union = build_candidate_union(pools, history=query.history)
@@ -456,6 +540,8 @@ def _evaluate(
                 "final_movie_ids": list(final_ids),
                 "final_ranks": [item.rank for item in final],
             }
+    if cached_pools is not None and next(cached_pools, None) is not None:
+        raise ValueError("cached Known-User pool stream has extra Queries")
     final_result = final_metrics.result()
     return (
         {
@@ -472,11 +558,17 @@ def _evaluate(
 
 
 def run_known_user_hybrid_benchmark(
-    events: Iterable[RatingEvent], *, config: KnownUserHybridConfig | None = None
+    events: Iterable[RatingEvent], *, config: KnownUserHybridConfig | None = None,
+    fit_cache: FitCache | None = None,
+    pool_cache: PoolCache | None = None,
 ) -> KnownUserHybridResult:
     """Fit four train-only retrievers and LHF; report validation only."""
 
     resolved = config or KnownUserHybridConfig()
+    fit_before = fit_cache.stats if fit_cache is not None else None
+    code_fingerprint = (
+        _package_source_fingerprint() if fit_cache is not None or pool_cache is not None else ""
+    )
     run_started = monotonic()
     dataset_checksum = getattr(events, "dataset_checksum", None)
     splits, fit_events, input_fingerprint = _split(events, resolved.seed)
@@ -492,10 +584,13 @@ def run_known_user_hybrid_benchmark(
     fold_fit_count = 0
     fold_holdout_count = 0
     fold_fingerprints: list[str] = []
+    pool_cache_log: list[dict[str, object]] = []
     inner_started = monotonic()
     for fold_index in range(resolved.inner_fold_count):
         inner_fit, inner_holdout = _inner_holdout(fit_events, inner_seed, fold_index)
-        inner_snapshot, inner_retrievers = _fit_bank(inner_fit, resolved)
+        inner_snapshot, inner_retrievers = _fit_bank(
+            inner_fit, resolved, fit_cache=fit_cache, code_fingerprint=code_fingerprint
+        )
         inner_catalog = frozenset(event.movie_id for event in inner_fit)
         inner_histories: dict[int, list[int]] = {}
         inner_gold: dict[int, list[int]] = {}
@@ -514,8 +609,24 @@ def run_known_user_hybrid_benchmark(
             tuple(PositiveInteraction.from_event(event) for event in inner_fit),
             retriever_bank=_BANK,
         )
-        for query in inner_queries:
-            pools = _pools_for(query, inner_retrievers, resolved.pool_limit)
+        inner_stream = _cached_partition(
+            pool_cache,
+            partition=f"inner:{fold_index}",
+            cohort_fingerprint=input_fingerprint,
+            snapshot=inner_snapshot,
+            retrievers=inner_retrievers,
+            queries=inner_queries,
+            config=resolved,
+            code_fingerprint=code_fingerprint,
+        )
+        scored = (
+            ((PoolQuery(query.subject_id, query.subject_id, query.history),
+              _pools_for(query, inner_retrievers, resolved.pool_limit)) for query in inner_queries)
+            if inner_stream is None else inner_stream
+        )
+        for query, (pool_query, pools) in zip(inner_queries, scored, strict=True):
+            if (pool_query.key, pool_query.history) != (query.subject_id, query.history):
+                raise ValueError("cached Known-User inner Query differs")
             rows.extend(
                 build_lhf_training_rows(
                     (query,),
@@ -525,6 +636,17 @@ def run_known_user_hybrid_benchmark(
                     seed=inner_seed + fold_index,
                 )
             )
+        if inner_stream is not None:
+            pool_cache_log.append({
+                "partition": f"inner:{fold_index}",
+                "fit_fingerprint": inner_snapshot.fingerprint,
+                "sources": {
+                    name: {"key": info.key, "cache_hit": info.cache_hit,
+                           "stored_depth": info.stored_depth,
+                           "model_fingerprint": inner_stream.model_fingerprints[name]}
+                    for name, info in inner_stream.cache_info.items()
+                },
+            })
         fold_query_count += len(inner_queries)
         fold_fit_count += len(inner_fit)
         fold_holdout_count += len(inner_holdout)
@@ -578,7 +700,9 @@ def run_known_user_hybrid_benchmark(
     del inner_retrievers, inner_snapshot, inner_builder, inner_fit, inner_holdout
     del inner_histories, inner_gold, inner_queries
     outer_started = monotonic()
-    outer_snapshot, outer_retrievers = _fit_bank(fit_events, resolved)
+    outer_snapshot, outer_retrievers = _fit_bank(
+        fit_events, resolved, fit_cache=fit_cache, code_fingerprint=code_fingerprint
+    )
     outer_builder = FusionFeatureBuilder.from_snapshot(
         outer_snapshot,
         tuple(PositiveInteraction.from_event(event) for event in fit_events),
@@ -586,10 +710,32 @@ def run_known_user_hybrid_benchmark(
     )
     outer_fit_seconds = monotonic() - outer_started
     validation_queries = _queries(splits, outer_catalog, "validation")
+    validation_stream = _cached_partition(
+        pool_cache,
+        partition="validation",
+        cohort_fingerprint=input_fingerprint,
+        snapshot=outer_snapshot,
+        retrievers=outer_retrievers,
+        queries=validation_queries,
+        config=resolved,
+        code_fingerprint=code_fingerprint,
+    )
     validation_started = monotonic()
     evaluated, rankings, subject_metrics, evidence = _evaluate(
-        validation_queries, outer_retrievers, fusion, outer_builder, outer_catalog, resolved
+        validation_queries, outer_retrievers, fusion, outer_builder, outer_catalog, resolved,
+        pool_stream=validation_stream,
     )
+    if validation_stream is not None:
+        pool_cache_log.append({
+            "partition": "validation",
+            "fit_fingerprint": outer_snapshot.fingerprint,
+            "sources": {
+                name: {"key": info.key, "cache_hit": info.cache_hit,
+                       "stored_depth": info.stored_depth,
+                       "model_fingerprint": validation_stream.model_fingerprints[name]}
+                for name, info in validation_stream.cache_info.items()
+            },
+        })
     validation_scoring_seconds = monotonic() - validation_started
     final_metrics = evaluated["final_lhf"]
     report: dict[str, object] = {
@@ -605,6 +751,16 @@ def run_known_user_hybrid_benchmark(
         },
         "configuration": resolved.to_dict(),
         "package_source_sha256": _package_source_fingerprint(),
+        "screen_cache": {
+            "code_fingerprint": (
+                code_fingerprint if fit_cache is not None or pool_cache is not None else None
+            ),
+            "pool_partitions": pool_cache_log,
+            "fit": (
+                {key: fit_cache.stats[key] - fit_before[key] for key in ("hits", "misses")}
+                if fit_cache is not None and fit_before is not None else None
+            ),
+        },
         "run_identity": run_identity(events),
         "retriever_bank": list(_BANK),
         "training_catalog_movie_ids": sorted(outer_catalog),

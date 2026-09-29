@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import gzip
 import json
 from copy import deepcopy
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from deep_recsys_lifecycle.models import RatingEvent
+from deep_recsys_lifecycle.paper_fit_cache import FitCache
+from deep_recsys_lifecycle.paper_pool_cache import PoolCache
 from deep_recsys_lifecycle.paper_screening import (
     PaperScreenWorkspace,
     ScreenAxis,
     baseline_configuration,
+    default_screen_runner,
     fixture_test_access,
     initial_axes,
 )
@@ -49,11 +54,12 @@ def _runner(_events: object, mode: str, configuration: dict[str, Any]) -> dict[s
     }
     source = {
         "name": "Rating Events",
-        "dataset_sha256": None,
+        "dataset_sha256": getattr(_events, "dataset_checksum", None),
         "input_event_fingerprint_sha256": "input-fixed",
     }
     common = {
         "source": source,
+        "package_source_sha256": "fixture-code-v1",
         "training_catalog_movie_ids": [1, 2, 3, 4],
         "runtime": {"total_wall_seconds": 0.1, "peak_process_rss_bytes": 1_000},
         "run_identity": {"git_revision": "fixture", "git_dirty": False},
@@ -92,7 +98,19 @@ def _runner(_events: object, mode: str, configuration: dict[str, Any]) -> dict[s
             },
             "test": {"status": "sealed", "membership_sha256": "history-test-sealed"},
         },
-        "reproducibility": {"split_seed": configuration["seed"], "test_evaluated": False},
+        "reproducibility": {
+            "split_seed": configuration["seed"],
+            "validation_subject_count": configuration["validation_subject_count"],
+            "test_subject_count": configuration["test_subject_count"],
+            "inner_held_out_fraction": configuration["inner_held_out_fraction"],
+            "candidate_pool_limit_per_source": configuration["candidate_pool_limit"],
+            "fusion_negative_rows_per_query": configuration["fusion_negative_rows_per_query"],
+            "multivae_config": configuration["multivae_config"],
+            "multivae_device_preference": configuration["multivae_device_preference"],
+            "capture_evidence": configuration["capture_evidence"],
+            "test_evaluated": False,
+            "implementation_sha256": "fixture-code-v1",
+        },
         "fusion_training": {
             "outer_fit_event_ids_sha256": "history-outer-fixed",
             "inner_fit_event_ids_sha256": "history-inner-fixed",
@@ -166,7 +184,12 @@ def test_public_screen_matches_cohort_breaks_recall_tie_and_ignores_test_labels(
     second, second_freeze = _screen(tmp_path / "second", [8, 9])
     assert first_freeze["modes"]["known_user"]["selected_run_id"] == "known-dropout-0"
     assert first_freeze["modes"]["history_only"]["selected_run_id"] == "history_only-baseline"
-    assert first_freeze["modes"] == second_freeze["modes"]
+    for mode in ("known_user", "history_only"):
+        for key in (
+            "selected_run_id", "selected_configuration_sha256", "validation_cohort_sha256",
+            "sealed_test_membership_sha256", "selection",
+        ):
+            assert first_freeze["modes"][mode][key] == second_freeze["modes"][mode][key]
     assert first.require_frozen_selection() == first_freeze
     assert second.require_frozen_selection() == second_freeze
     for record in first.completed_runs("known_user").values():
@@ -248,8 +271,18 @@ def test_real_known_user_pipeline_refits_fusion_on_the_same_validation_cohort(
             "history_only": baseline_configuration("history_only"),
         },
     )
+    runner = partial(
+        default_screen_runner,
+        fit_cache=FitCache(tmp_path / "fit-cache", max_bytes=100_000_000, min_free_bytes=0),
+        pool_cache=PoolCache(
+            tmp_path / "pool-cache",
+            max_bytes=100_000_000,
+            min_free_bytes=0,
+            shard_queries=4,
+        ),
+    )
     baseline_id = screen.register_baseline("known_user")
-    baseline = screen.run_registered(baseline_id, events)
+    baseline = screen.run_registered(baseline_id, events, runner=runner)
     variant_config = screen.planned_configuration(
         mode="known_user",
         axis_name="multivae_dropout",
@@ -264,7 +297,7 @@ def test_real_known_user_pipeline_refits_fusion_on_the_same_validation_cohort(
         reference_run_id=baseline_id,
         configuration=variant_config,
     )
-    variant = screen.run_registered("known-dropout-0", events)
+    variant = screen.run_registered("known-dropout-0", events, runner=runner)
 
     assert variant["validation_cohort_sha256"] == baseline["validation_cohort_sha256"]
     assert variant["configuration"]["multivae"]["dropout"] == 0.2
@@ -275,6 +308,11 @@ def test_real_known_user_pipeline_refits_fusion_on_the_same_validation_cohort(
     assert variant["source_pools"].keys() == baseline["source_pools"].keys()
     assert variant["run_identity"] == baseline["run_identity"]
     assert "test" not in variant
+    for partition in variant["screen_cache"]["pool_partitions"]:
+        assert partition["sources"]["popularity"]["cache_hit"]
+        assert partition["sources"]["itemknn"]["cache_hit"]
+        assert partition["sources"]["lightgcn"]["cache_hit"]
+        assert not partition["sources"]["multivae"]["cache_hit"]
 
 
 def test_frozen_receipt_checks_mode_cohort_and_both_configuration_hashes(
@@ -302,3 +340,135 @@ def test_frozen_receipt_checks_mode_cohort_and_both_configuration_hashes(
         fixture_test_access("known_user").require(
             **{**checks, "source_sha256": "MovieLens-checksum"}
         )
+
+
+def test_changed_runner_code_and_effective_config_are_rejected(tmp_path: Path) -> None:
+    axis = ScreenAxis("multivae_dropout", ("multivae.dropout",), (0.2, 0.5), "Measured loss")
+    screen = PaperScreenWorkspace.create(
+        tmp_path,
+        source_sha256=None,
+        axes_by_mode={"known_user": (axis,), "history_only": ()},
+    )
+    baseline = screen.register_baseline("known_user")
+    screen.run_registered(baseline, (), runner=_runner)
+    config = screen.planned_configuration(
+        mode="known_user",
+        axis_name="multivae_dropout",
+        alternative_index=0,
+        reference_run_id=baseline,
+    )
+    screen.register_variant(
+        run_id="variant",
+        mode="known_user",
+        axis_name="multivae_dropout",
+        alternative_index=0,
+        reference_run_id=baseline,
+        configuration=config,
+    )
+
+    def changed_code(events: object, mode: str, configuration: dict[str, Any]) -> dict[str, object]:
+        report = _runner(events, mode, configuration)
+        report["package_source_sha256"] = "fixture-code-v2"
+        return report
+
+    with pytest.raises(ValueError, match="implementation changed"):
+        screen.run_registered("variant", (), runner=changed_code)
+
+    def ignored_factor(
+        events: object, mode: str, configuration: dict[str, Any]
+    ) -> dict[str, object]:
+        report = _runner(events, mode, configuration)
+        report["configuration"] = baseline_configuration("known_user")
+        return report
+
+    with pytest.raises(ValueError, match="effective configuration"):
+        screen.run_registered("variant", (), runner=ignored_factor)
+    assert not screen.completed_runs("known_user").get("variant")
+
+
+def test_interrupted_subject_write_resumes_only_when_evidence_matches(tmp_path: Path) -> None:
+    screen = PaperScreenWorkspace.create(
+        tmp_path, source_sha256=None,
+        axes_by_mode={"known_user": (), "history_only": ()},
+    )
+    baseline = screen.register_baseline("known_user")
+    orphan = tmp_path / "subjects" / f"{baseline}.json.gz"
+    orphan.parent.mkdir(parents=True)
+    with gzip.open(orphan, "wt", encoding="utf-8") as handle:
+        json.dump(_rows(0.0, "known_user"), handle)
+    record = screen.run_registered(baseline, (), runner=_runner)
+    assert record["per_subject_path"] == f"subjects/{baseline}.json.gz"
+
+    other = PaperScreenWorkspace.create(
+        tmp_path / "other", source_sha256=None,
+        axes_by_mode={"known_user": (), "history_only": ()},
+    )
+    other_baseline = other.register_baseline("known_user")
+    corrupted = other.root / "subjects" / f"{other_baseline}.json.gz"
+    corrupted.parent.mkdir(parents=True)
+    with gzip.open(corrupted, "wt", encoding="utf-8") as handle:
+        json.dump({"wrong": {}}, handle)
+    with pytest.raises(ValueError, match="interrupted run"):
+        other.run_registered(other_baseline, (), runner=_runner)
+
+
+def test_axis_alternatives_must_share_the_same_reference(tmp_path: Path) -> None:
+    axis = ScreenAxis("multivae_dropout", ("multivae.dropout",), (0.2, 0.5), "Measured loss")
+    screen = PaperScreenWorkspace.create(
+        tmp_path, source_sha256=None,
+        axes_by_mode={"known_user": (axis,), "history_only": ()},
+    )
+    baseline = screen.register_baseline("known_user")
+    screen.run_registered(baseline, (), runner=_runner)
+    first_config = screen.planned_configuration(
+        mode="known_user", axis_name="multivae_dropout",
+        alternative_index=0, reference_run_id=baseline,
+    )
+    screen.register_variant(
+        run_id="first", mode="known_user", axis_name="multivae_dropout",
+        alternative_index=0, reference_run_id=baseline, configuration=first_config,
+    )
+    screen.run_registered("first", (), runner=_runner)
+    second_config = screen.planned_configuration(
+        mode="known_user", axis_name="multivae_dropout",
+        alternative_index=1, reference_run_id="first",
+    )
+    with pytest.raises(ValueError, match="same completed reference"):
+        screen.register_variant(
+            run_id="second", mode="known_user", axis_name="multivae_dropout",
+            alternative_index=1, reference_run_id="first", configuration=second_config,
+        )
+
+
+def test_archived_baseline_requires_exact_subject_and_diagnostic_replay(tmp_path: Path) -> None:
+    class FixtureSource(list[RatingEvent]):
+        dataset_checksum = "fixture-sha256"
+
+    source = FixtureSource()
+    screen = PaperScreenWorkspace.create(
+        tmp_path / "screen", source_sha256=source.dataset_checksum,
+        axes_by_mode={"known_user": (), "history_only": ()},
+    )
+    baseline = screen.register_baseline("known_user")
+    reference = _runner(source, "known_user", baseline_configuration("known_user"))
+    archived = tmp_path / "archived-report.json"
+
+    changed_union = deepcopy(reference)
+    changed_union["evaluation"]["oracle_union"]["OracleUnionRecall"] = 0.9
+    archived.write_text(json.dumps(changed_union), encoding="utf-8")
+    with pytest.raises(ValueError, match="archived"):
+        screen.run_registered(baseline, source, runner=_runner, reference_report_path=archived)
+    assert not (screen.root / "cohorts" / "known_user.json").exists()
+
+    changed_subject = deepcopy(reference)
+    changed_subject["validation_subject_metrics"]["1"]["Recall@100"] = 0.9
+    archived.write_text(json.dumps(changed_subject), encoding="utf-8")
+    with pytest.raises(ValueError, match="archived"):
+        screen.run_registered(baseline, source, runner=_runner, reference_report_path=archived)
+    assert not (screen.root / "cohorts" / "known_user.json").exists()
+
+    archived.write_text(json.dumps(reference), encoding="utf-8")
+    accepted = screen.run_registered(
+        baseline, source, runner=_runner, reference_report_path=archived
+    )
+    assert accepted["metrics"] == reference["metrics"]

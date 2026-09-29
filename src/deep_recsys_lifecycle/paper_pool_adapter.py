@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import pickle
 import re
+import struct
 from collections.abc import Callable, Collection, Generator, Iterator, Mapping, Sequence
 from contextlib import ExitStack, closing
 from dataclasses import dataclass, fields, is_dataclass
-from typing import Any
 
 from .fusion import FUSION_BANKS, FusionQueryMode
 from .models import Candidate
@@ -23,25 +22,16 @@ class PoolSourceCacheInfo:
     stored_depth: int | None
 
 
-class _HashWriter:
-    def __init__(self, digest: Any) -> None:
-        self.digest = digest
-
-    def write(self, data: bytes) -> int:
-        self.digest.update(data)
-        return len(data)
-
-
 def retriever_state_sha256(retriever: object) -> str:
-    """Hash fitted dataclass state without copying its serialized bytes into RAM.
+    """Hash fitted dataclass state in canonical field, map, and set order.
 
     Excluding ``init=False`` fields keeps lazy scoring accelerators out of the key.
-    A retriever without picklable dataclass state needs a caller-supplied fingerprint.
+    A retriever without supported dataclass state needs a caller-supplied fingerprint.
     """
 
     if not is_dataclass(retriever):
         raise TypeError("retriever state fingerprint requires a dataclass")
-    digest = hashlib.sha256(b"paper-pool-retriever-state-v1\0")
+    digest = hashlib.sha256(b"paper-pool-retriever-state-v2\0")
     state = (
         type(retriever).__module__,
         type(retriever).__qualname__,
@@ -51,8 +41,39 @@ def retriever_state_sha256(retriever: object) -> str:
             if field.init
         ),
     )
-    pickle.dump(state, _HashWriter(digest), protocol=5)
+    _hash_canonical(digest, state)
     return digest.hexdigest()
+
+
+def _hash_canonical(digest: hashlib._Hash, value: object) -> None:
+    if value is None:
+        digest.update(b"n")
+    elif isinstance(value, bool):
+        digest.update(b"t" if value else b"f")
+    elif isinstance(value, int):
+        digest.update(b"i" + str(value).encode("ascii") + b";")
+    elif isinstance(value, float):
+        digest.update(b"d" + struct.pack("!d", value))
+    elif isinstance(value, str):
+        encoded = value.encode("utf-8")
+        digest.update(b"s" + len(encoded).to_bytes(8, "big") + encoded)
+    elif isinstance(value, bytes):
+        digest.update(b"b" + len(value).to_bytes(8, "big") + value)
+    elif isinstance(value, Mapping):
+        digest.update(b"m" + len(value).to_bytes(8, "big"))
+        for key in sorted(value, key=lambda item: (type(item).__name__, repr(item))):
+            _hash_canonical(digest, key)
+            _hash_canonical(digest, value[key])
+    elif isinstance(value, (set, frozenset)):
+        digest.update(b"e" + len(value).to_bytes(8, "big"))
+        for item in sorted(value, key=lambda item: (type(item).__name__, repr(item))):
+            _hash_canonical(digest, item)
+    elif isinstance(value, (tuple, list)):
+        digest.update((b"u" if isinstance(value, tuple) else b"l") + len(value).to_bytes(8, "big"))
+        for item in value:
+            _hash_canonical(digest, item)
+    else:
+        raise TypeError(f"unsupported fitted state type: {type(value).__qualname__}")
 
 
 class PartitionPoolStream:
@@ -69,12 +90,14 @@ class PartitionPoolStream:
         source_names: tuple[str, ...],
         retrievers: Mapping[str, CandidateRetriever],
         results: Mapping[str, PoolCacheResult],
+        model_fingerprints: Mapping[str, str],
         depth: int,
     ) -> None:
         self.queries = queries
         self.source_names = source_names
         self._retrievers = retrievers
         self._results = results
+        self.model_fingerprints = dict(model_fingerprints)
         self._depth = depth
 
     @property
@@ -206,7 +229,7 @@ def partition_pools(
                 _source_scorer(retriever),
                 verify_deeper_prefix=verify_deeper_prefix,
             )
-    return PartitionPoolStream(ordered, names, retrievers, results, depth)
+    return PartitionPoolStream(ordered, names, retrievers, results, model_fingerprints, depth)
 
 
 def _uncached_pools(

@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic
@@ -25,8 +25,12 @@ from .fusion import (
 from .itemknn import fit_itemknn
 from .models import Candidate, PositiveInteraction, RatingEvent
 from .multivae import MultVAEConfig, fit_multivae
+from .paper_benchmark import _package_source_fingerprint
 from .paper_diagnostics import PaperGoldDiagnostics
+from .paper_fit_cache import FitCache
 from .paper_measurements import peak_rss_bytes, run_identity, summarize_query_latency
+from .paper_pool_adapter import PartitionPoolStream, partition_pools, retriever_state_sha256
+from .paper_pool_cache import PoolCache, PoolQuery
 from .popularity import fit_popularity
 from .retriever import CandidateRetriever, candidate_pool_for_query, validate_candidate_pool_limit
 
@@ -125,14 +129,26 @@ def run_history_only_benchmark(
     config: HistoryOnlyBenchmarkConfig | None = None,
     evaluate_test: bool = False,
     test_access: FrozenTestAccess | None = None,
+    fit_cache: FitCache | None = None,
+    pool_cache: PoolCache | None = None,
 ) -> HistoryOnlyBenchmarkResult:
     """Run the disjoint-Subject split with a three-source History-Only LHF baseline."""
 
     config = config or HistoryOnlyBenchmarkConfig()
+    dataset_checksum = getattr(events, "dataset_checksum", None)
+    fit_before = fit_cache.stats if fit_cache is not None else None
+    code_fingerprint = (
+        _package_source_fingerprint() if fit_cache is not None or pool_cache is not None else ""
+    )
     if evaluate_test and test_access is None:
         raise ValueError("frozen test access receipt is required")
+    if evaluate_test:
+        assert test_access is not None
+        test_access.preflight(
+            mode="history_only",
+            source_sha256=dataset_checksum if isinstance(dataset_checksum, str) else None,
+        )
     run_started = monotonic()
-    dataset_checksum = getattr(events, "dataset_checksum", None)
     subject_events: defaultdict[int, dict[int, RatingEvent]] = defaultdict(dict)
     rating_event_count = 0
     positive_rating_event_count = 0
@@ -220,11 +236,17 @@ def run_history_only_benchmark(
     inner_fit_event_count = 0
     inner_fit_event_ids_sha256: str | None = None
     inner_feature_builder: FusionFeatureBuilder | None = None
+    pool_cache_log: list[dict[str, object]] = []
     if inner_fit_ids:
         inner_events = _events_for_subjects(inner_fit_ids, eligible_subject_movies, subject_events)
         inner_snapshot = DataSnapshot.from_events(inner_events)
-        inner_bank = _fit_retriever_bank(inner_snapshot, config=config, seed=config.seed)
+        inner_bank = _fit_retriever_bank(
+            inner_snapshot, config=config, seed=config.seed,
+            fit_cache=fit_cache, code_fingerprint=code_fingerprint,
+        )
         inner_catalog = {event.movie_id for event in inner_snapshot.events}
+        inner_queries: list[HistoryOnlyFusionQuery] = []
+        inner_pool_queries: list[PoolQuery] = []
         for index, subject_id in enumerate(inner_pseudo_ids):
             fold_in, held_out = _fold_in_split(
                 eligible_subject_movies[subject_id], config.seed, subject_id, "inner-fold-in"
@@ -235,7 +257,37 @@ def run_history_only_benchmark(
                 continue
             key = f"inner-{index:06d}"
             query = HistoryOnlyFusionQuery(pool_key=key, history=history, gold_movie_ids=gold)
-            pools = _query_pools(inner_bank.retrievers, history, config.candidate_pool_limit)
+            inner_queries.append(query)
+            inner_pool_queries.append(PoolQuery(key=key, subject_id=None, history=history))
+            inner_eligible_query_count += 1
+            inner_gold_event_ids.extend(
+                subject_events[subject_id][movie_id].event_id for movie_id in gold
+            )
+        inner_stream = _cached_partition(
+            pool_cache,
+            partition="inner:0",
+            cohort_fingerprint=input_fingerprint,
+            snapshot_fingerprint=inner_snapshot.fingerprint,
+            retrievers=inner_bank.retrievers,
+            catalog=frozenset(inner_catalog),
+            queries=inner_pool_queries,
+            config=config,
+            code_fingerprint=code_fingerprint,
+        )
+        scored = (
+            (
+                (pool_query, _query_pools(
+                    inner_bank.retrievers, pool_query.history, config.candidate_pool_limit
+                ))
+                for pool_query in inner_pool_queries
+            )
+            if inner_stream is None else inner_stream
+        )
+        for query, (pool_query, pools) in zip(inner_queries, scored, strict=True):
+            if (pool_query.key, pool_query.subject_id, pool_query.history) != (
+                query.pool_key, None, query.history,
+            ):
+                raise ValueError("cached History-Only inner Query differs")
             training_rows.extend(
                 build_history_only_lhf_training_rows(
                     (query,),
@@ -245,10 +297,17 @@ def run_history_only_benchmark(
                     seed=config.seed,
                 )
             )
-            inner_eligible_query_count += 1
-            inner_gold_event_ids.extend(
-                subject_events[subject_id][movie_id].event_id for movie_id in gold
-            )
+        if inner_stream is not None:
+            pool_cache_log.append({
+                "partition": "inner:0",
+                "fit_fingerprint": inner_snapshot.fingerprint,
+                "sources": {
+                    name: {"key": info.key, "cache_hit": info.cache_hit,
+                           "stored_depth": info.stored_depth,
+                           "model_fingerprint": inner_stream.model_fingerprints[name]}
+                    for name, info in inner_stream.cache_info.items()
+                },
+            })
         inner_snapshot_fingerprint = inner_snapshot.fingerprint
         inner_fit_event_count = inner_snapshot.event_count
         inner_fit_event_ids_sha256 = _event_ids_fingerprint(inner_snapshot.events)
@@ -314,7 +373,10 @@ def run_history_only_benchmark(
     retained_training_rows = rows if config.capture_evidence else ()
     del rows
     outer_started = monotonic()
-    outer_bank = _fit_retriever_bank(outer_snapshot, config=config, seed=config.seed)
+    outer_bank = _fit_retriever_bank(
+        outer_snapshot, config=config, seed=config.seed,
+        fit_cache=fit_cache, code_fingerprint=code_fingerprint,
+    )
     outer_fit_seconds = monotonic() - outer_started
     del outer_snapshot, training_events
 
@@ -398,6 +460,26 @@ def run_history_only_benchmark(
     metrics: dict[str, dict[str, int | float | None]] = {}
     diagnostics: dict[str, object] = {}
     candidate_pools: dict[str, object] = {}
+    validation_pool_queries = tuple(
+        PoolQuery(
+            key=f"validation-{index:06d}",
+            subject_id=None,
+            history=queries_by_subject[subject_id].history_movie_ids,
+        )
+        for index, subject_id in enumerate(cohorts["validation"])
+        if gold_sets[subject_id]
+    )
+    validation_stream = _cached_partition(
+        pool_cache,
+        partition="validation",
+        cohort_fingerprint=input_fingerprint,
+        snapshot_fingerprint=outer_snapshot_fingerprint,
+        retrievers=outer_bank.retrievers,
+        catalog=training_catalog,
+        queries=validation_pool_queries,
+        config=config,
+        code_fingerprint=code_fingerprint,
+    )
     evaluation_started = monotonic()
     for cohort in ("validation", "test") if evaluate_test else ("validation",):
         cohort_metrics, cohort_diagnostics, cohort_pools = _score_cohort(
@@ -410,10 +492,23 @@ def run_history_only_benchmark(
             fusion,
             config.candidate_pool_limit,
             config.capture_evidence,
+            pool_stream=validation_stream if cohort == "validation" else None,
+            partition=cohort,
         )
         metrics[cohort] = cohort_metrics
         diagnostics[cohort] = cohort_diagnostics
         candidate_pools[cohort] = cohort_pools
+        if cohort == "validation" and validation_stream is not None:
+            pool_cache_log.append({
+                "partition": "validation",
+                "fit_fingerprint": outer_snapshot_fingerprint,
+                "sources": {
+                    name: {"key": info.key, "cache_hit": info.cache_hit,
+                           "stored_depth": info.stored_depth,
+                           "model_fingerprint": validation_stream.model_fingerprints[name]}
+                    for name, info in validation_stream.cache_info.items()
+                },
+            })
     evaluation_seconds = monotonic() - evaluation_started
     report: dict[str, object] = {
         "schema_version": 2,
@@ -423,6 +518,16 @@ def run_history_only_benchmark(
             "name": "MovieLens 20M" if isinstance(dataset_checksum, str) else "Rating Events",
             "dataset_sha256": dataset_checksum if isinstance(dataset_checksum, str) else None,
             "input_event_fingerprint_sha256": input_fingerprint,
+        },
+        "screen_cache": {
+            "code_fingerprint": (
+                code_fingerprint if fit_cache is not None or pool_cache is not None else None
+            ),
+            "pool_partitions": pool_cache_log,
+            "fit": (
+                {key: fit_cache.stats[key] - fit_before[key] for key in ("hits", "misses")}
+                if fit_cache is not None and fit_before is not None else None
+            ),
         },
         "run_identity": run_identity(events),
         "evaluation": {
@@ -600,17 +705,42 @@ def _fit_retriever_bank(
     *,
     config: HistoryOnlyBenchmarkConfig,
     seed: int,
+    fit_cache: FitCache | None = None,
+    code_fingerprint: str = "",
 ) -> _RetrieverBank:
     interactions = tuple(PositiveInteraction.from_event(event) for event in snapshot.events)
-    retrievers: dict[str, CandidateRetriever] = {
-        "popularity": fit_popularity(snapshot, interactions),
-        "itemknn": fit_itemknn(snapshot, interactions).to_serving(),
-        "multivae": fit_multivae(
-            snapshot,
-            interactions,
-            config=config.multivae_config,
+    def source_fit(
+        name: str,
+        source_config: Mapping[str, object],
+        fit: Callable[[], CandidateRetriever],
+    ) -> CandidateRetriever:
+        if fit_cache is None:
+            return fit()
+        return fit_cache.get_or_fit(
+            source=name,
+            snapshot=snapshot,
+            source_config=source_config,
             seed=seed,
-            device_preference=config.multivae_device_preference,
+            device=config.multivae_device_preference if name == "multivae" else "cpu",
+            code_fingerprint=code_fingerprint,
+            fit=fit,
+        )
+
+    retrievers: dict[str, CandidateRetriever] = {
+        "popularity": source_fit(
+            "popularity", {"ranking": "positive_count"},
+            lambda: fit_popularity(snapshot, interactions),
+        ),
+        "itemknn": source_fit(
+            "itemknn", {"similarity": "binary_cosine"},
+            lambda: fit_itemknn(snapshot, interactions).to_serving(),
+        ),
+        "multivae": source_fit(
+            "multivae", config.multivae_config.to_dict(),
+            lambda: fit_multivae(
+                snapshot, interactions, config=config.multivae_config,
+                seed=seed, device_preference=config.multivae_device_preference,
+            ),
         ),
     }
     feature_builder = FusionFeatureBuilder.from_snapshot(
@@ -662,6 +792,52 @@ def _query_pools(
     }
 
 
+def _cached_partition(
+    pool_cache: PoolCache | None,
+    *,
+    partition: str,
+    cohort_fingerprint: str,
+    snapshot_fingerprint: str,
+    retrievers: Mapping[str, CandidateRetriever],
+    catalog: frozenset[int],
+    queries: Sequence[PoolQuery],
+    config: HistoryOnlyBenchmarkConfig,
+    code_fingerprint: str,
+) -> PartitionPoolStream | None:
+    if pool_cache is None:
+        return None
+    return partition_pools(
+        pool_cache,
+        mode="history_only",
+        partition=partition,
+        cohort_fingerprint=cohort_fingerprint,
+        fit_fingerprint=snapshot_fingerprint,
+        code_fingerprint=code_fingerprint,
+        retrievers=retrievers,
+        source_configs={
+            "popularity": {"ranking": "positive_count"},
+            "itemknn": {"similarity": "binary_cosine"},
+            "multivae": config.multivae_config.to_dict(),
+        },
+        model_fingerprints={
+            name: retriever_state_sha256(retriever)
+            for name, retriever in retrievers.items()
+        },
+        seed=config.seed,
+        device_by_source={
+            name: config.multivae_device_preference if name == "multivae" else "cpu"
+            for name in HISTORY_ONLY_BANK
+        },
+        checkpoint_by_source={
+            name: "last" if name == "multivae" else "not_applicable"
+            for name in HISTORY_ONLY_BANK
+        },
+        catalog_movie_ids=catalog,
+        queries=queries,
+        depth=config.candidate_pool_limit,
+    )
+
+
 def build_history_only_lhf_training_rows(
     queries: Sequence[HistoryOnlyFusionQuery],
     pools: Mapping[int | str, Mapping[str, Sequence[Candidate]]],
@@ -693,6 +869,8 @@ def _score_cohort(
     fusion: LearnedHybridFusion,
     pool_limit: int,
     capture_evidence: bool,
+    pool_stream: PartitionPoolStream | None = None,
+    partition: str = "validation",
 ) -> tuple[dict[str, int | float | None], dict[str, object], dict[str, object]]:
     source_accumulators = {name: _MetricAccumulator() for name in HISTORY_ONLY_BANK}
     final_accumulator = _MetricAccumulator()
@@ -713,7 +891,8 @@ def _score_cohort(
         training_catalog=training_catalog,
         training_popularity=bank.feature_builder.item_popularity,
     )
-    for subject_id in subject_ids:
+    cached_pools = iter(pool_stream) if pool_stream is not None else None
+    for index, subject_id in enumerate(subject_ids):
         gold_set = gold_sets[subject_id]
         if not gold_set:
             loss.observe(
@@ -727,7 +906,14 @@ def _score_cohort(
             continue
         history = queries_by_subject[subject_id].history_movie_ids
         scoring_started = monotonic()
-        pools = _query_pools(bank.retrievers, history, pool_limit)
+        if cached_pools is None:
+            pools = _query_pools(bank.retrievers, history, pool_limit)
+        else:
+            cached_query, pools = next(cached_pools)
+            if (cached_query.key, cached_query.subject_id, cached_query.history) != (
+                f"{partition}-{index:06d}", None, history,
+            ):
+                raise ValueError("cached History-Only Query differs from validation Query")
         union = build_candidate_union(pools, history=history)
         final = rank_lhf_union(fusion, bank.feature_builder, pools, history, top_n=100)
         scoring_samples_ms.append((monotonic() - scoring_started) * 1000)
@@ -770,6 +956,8 @@ def _score_cohort(
                 "oracle_union_movie_ids": [candidate.movie_id for candidate in union],
                 "final_lhf_top100_movie_ids": [candidate.movie_id for candidate in final],
             }
+    if cached_pools is not None and next(cached_pools, None) is not None:
+        raise ValueError("cached History-Only pool stream has extra Queries")
     final_metrics = final_accumulator.finish(training_catalog)
     source_metrics = {
         name: source_accumulators[name].finish(training_catalog) for name in HISTORY_ONLY_BANK
