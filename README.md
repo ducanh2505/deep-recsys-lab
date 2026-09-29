@@ -190,6 +190,59 @@ Kubernetes deployment, public hosting, frontend app, or interactive dashboard. `
 available for the original single-50% lifecycle smoke path; use `rolling` for the complete
 portfolio report and three-mode latency evidence.
 
+## Run the Known-User paper-style benchmark
+
+This separate MovieLens 20M run applies the LightGCN/NGCF Known-User protocol: ratings of at
+least 4.0, iterative 10-core filtering, deterministic per-Subject 80/20 train/test splits, and
+validation reserved from the training portion. Popularity, ItemKNN, Mult-VAE, and LightGCN fit
+on the remaining training interactions. Inner interaction holdouts train Learned Hybrid Fusion,
+which supplies the final Top-100 order. The structured JSON report records validation macro
+Recall/NDCG at 10, 20, 50, and 100, source-pool and Oracle Union diagnostics, catalog
+exclusions, training provenance, and source and code fingerprints. It records exact training
+and validation memberships while withholding test Movie IDs and outcomes until a configuration
+is frozen. This run does not start Kafka and must be read separately from the chronological
+rolling report.
+
+The initial full-profile configuration fits Mult-VAE for one epoch in batches of 256 and
+LightGCN for one epoch in batches of 65,536 on CPU, matching the historical neural training
+budget. One inner 10% interaction fold trains fusion; `--inner-fold-count` can increase that to
+five disjoint folds. The report records these settings for later controlled comparisons.
+
+```bash
+uv run movie-recsys known-user-benchmark \
+  --cache var/datasets \
+  --output artifacts/paper-known-user/report.json \
+  --seed 42
+```
+
+## Run the History-Only paper-style benchmark
+
+This independent MovieLens 20M run follows the Mult-VAE held-out Subject protocol: ratings of
+at least 4.0, at least five distinct positive Movies per Subject, and disjoint groups of 10,000
+validation and 10,000 test Subjects. Remaining Subjects supply the training-visible Candidate
+Catalog. Popularity, ItemKNN, and Mult-VAE fit on those Subjects; an inner disjoint Subject
+split trains History-Only Learned Hybrid Fusion on naturally retrieved Gold Set Movies. Fusion
+supplies the final Top-100 order, while the report keeps source and Oracle Union diagnostics.
+Each held-out Subject's positives are split deterministically into 80% fold-in history and a
+complete 20% held-out set. A scoring Query contains only fold-in Movie IDs; its Subject ID is
+used only to audit split membership and metrics. Movies absent from
+the training catalog are recorded and excluded from the scoring history or eligible Gold Set.
+The JSON report includes exact Subject cohort membership, exclusions, training provenance, and
+validation macro Recall and binary NDCG at 10, 20, 50, and 100. Test partitions and metrics stay
+sealed during validation; after freezing a configuration, `--evaluate-test` reveals the test
+split and scores.
+The run makes no temporal quality claim.
+
+```bash
+uv run movie-recsys history-only-benchmark \
+  --cache var/datasets \
+  --output artifacts/paper-history-only/report.json \
+  --seed 42
+```
+
+For a small public fixture, pass smaller `--validation-subject-count` and
+`--test-subject-count` values; the five-positive and 80/20 rules remain fixed.
+
 ## Run the full MovieLens 20M profile
 
 The full command verifies all 20,000,263 source ratings, then replays them through Kafka in

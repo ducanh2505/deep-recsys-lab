@@ -95,9 +95,15 @@ _Avoid_: Model file, Checkpoint, Deployment
 ## Evaluation
 
 **Gold Candidate**:
-The first Positive Interaction for a Subject in the Future Window, used as the target of one
-evaluation Query.
+The first Positive Interaction for a Subject in the Future Window, used as the sole target of
+one Query in the original temporal evaluation.
 _Avoid_: Ground-truth item, Positive sample
+
+**Gold Set**:
+The distinct, unseen Movies reserved as positive evaluation targets for one Query under its
+declared evaluation protocol. The original temporal evaluation has a one-Movie Gold Set; the
+paper-style evaluations may have multiple Movies.
+_Avoid_: Gold Candidate when multiple Movies are evaluated
 
 **Empty-History Evaluation Cohort**:
 Subjects with a Positive Interaction in the Future Window and no Positive Interactions in the
@@ -106,13 +112,18 @@ served Query has no Subject identity or preference history.
 _Avoid_: Masked existing-user cohort
 
 **Retrieval Coverage**:
-The share of evaluation Queries for which the Gold Candidate appears in a bounded Candidate
-Pool.
+The share of evaluation Queries for which at least one Movie from the Gold Set appears among the
+first K Candidates of an ordered, bounded Candidate Pool, reported as Retrieval Coverage@K.
 _Avoid_: Accuracy, Recall when discussing the retrieval ceiling
 
+**Catalog Coverage**:
+The share of eligible Movies that appear at least once among the first K Candidates returned
+across an evaluation cohort, reported as Catalog Coverage@K.
+_Avoid_: Retrieval Coverage, Diversity when only catalog breadth is measured
+
 **Conditional Ranking Success**:
-The share of covered evaluation Queries for which the Gold Candidate is placed in the final
-Top-N output.
+The share of covered evaluation Queries for which at least one Movie from the Gold Set is placed
+in the final Top-N output.
 _Avoid_: Conditional accuracy
 
 **User Cold Start**:

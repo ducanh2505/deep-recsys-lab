@@ -155,11 +155,20 @@ class FusionFeatureBuilder:
         pools: Mapping[str, Sequence[Candidate]],
         history: Sequence[int],
     ) -> tuple[float, ...]:
+        return self._features_for_indexed(
+            movie_id, _index_pool_evidence(pools, self.retriever_bank), len(set(history))
+        )
+
+    def _features_for_indexed(
+        self,
+        movie_id: int,
+        evidence: Mapping[str, Mapping[int, Candidate]],
+        unique_history_length: int,
+    ) -> tuple[float, ...]:
         values: list[float] = []
         ranks: list[float] = []
-        observed = set(history)
         for retriever in self.retriever_bank:
-            candidate = _candidate_for_movie(pools.get(retriever, ()), movie_id)
+            candidate = evidence[retriever].get(movie_id)
             if candidate is None:
                 values.extend((0.0, 0.0, 0.0))
                 continue
@@ -170,7 +179,6 @@ class FusionFeatureBuilder:
             values.extend((1.0, rank, score))
             ranks.append(rank)
 
-        unique_history_length = len(set(observed))
         hit_count = float(len(ranks))
         min_rank = min(ranks) if ranks else 0.0
         mean_rank = sum(ranks) / len(ranks) if ranks else 0.0
@@ -222,11 +230,23 @@ def build_candidate_union(
     )
 
 
-def _candidate_for_movie(candidates: Sequence[Candidate], movie_id: int) -> Candidate | None:
-    found = [candidate for candidate in candidates if candidate.movie_id == movie_id]
-    if not found:
-        return None
-    return min(found, key=lambda candidate: (candidate.rank, candidate.movie_id))
+def _index_pool_evidence(
+    pools: Mapping[str, Sequence[Candidate]], retriever_bank: Sequence[str]
+) -> dict[str, dict[int, Candidate]]:
+    """Keep the best-ranked evidence for each Movie in every eligible source pool."""
+
+    indexed: dict[str, dict[int, Candidate]] = {}
+    for retriever in retriever_bank:
+        by_movie: dict[int, Candidate] = {}
+        for candidate in pools.get(retriever, ()):
+            previous = by_movie.get(candidate.movie_id)
+            if previous is None or (candidate.rank, candidate.movie_id) < (
+                previous.rank,
+                previous.movie_id,
+            ):
+                by_movie[candidate.movie_id] = candidate
+        indexed[retriever] = by_movie
+    return indexed
 
 
 def _query_key(query: Any) -> int | str:
@@ -247,7 +267,11 @@ def build_lhf_training_rows(
     max_negative_rows_per_query: int | None = None,
     seed: int = 42,
 ) -> tuple[FusionTrainingRow, ...]:
-    """Make validation labels from naturally present union rows only."""
+    """Make labels for every naturally retrieved Gold Set Movie.
+
+    The chronological cohort still supplies ``gold_movie_id``. Paper-style queries
+    supply ``gold_movie_ids``; neither form inserts held-out Movies into a pool.
+    """
 
     if max_negative_rows_per_query is not None and (
         isinstance(max_negative_rows_per_query, bool) or max_negative_rows_per_query < 1
@@ -260,6 +284,11 @@ def build_lhf_training_rows(
     expected_names = set(feature_builder.retriever_bank)
     for query in cohort:
         key = _query_key(query)
+        multi_gold = getattr(query, "gold_movie_ids", None)
+        if multi_gold is None:
+            gold_ids = frozenset((query.gold_movie_id,))
+        else:
+            gold_ids = frozenset(multi_gold)
         query_pools = pools.get(key, {})
         unknown_retrievers = set(query_pools) - expected_names
         if unknown_retrievers:
@@ -267,30 +296,26 @@ def build_lhf_training_rows(
         union = build_candidate_union(query_pools, history=query.history)
         selected = union
         if max_negative_rows_per_query is not None:
-            positive = tuple(
-                candidate for candidate in union if candidate.movie_id == query.gold_movie_id
-            )
+            positive = tuple(candidate for candidate in union if candidate.movie_id in gold_ids)
             negatives = sorted(
-                (
-                    candidate
-                    for candidate in union
-                    if candidate.movie_id != query.gold_movie_id
-                ),
+                (candidate for candidate in union if candidate.movie_id not in gold_ids),
                 key=lambda candidate: (
                     sha256(f"{seed}:{key}:{candidate.movie_id}".encode()).digest(),
                     candidate.movie_id,
                 ),
             )[:max_negative_rows_per_query]
             selected = tuple(sorted((*positive, *negatives), key=lambda item: item.movie_id))
+        evidence = _index_pool_evidence(query_pools, feature_builder.retriever_bank)
+        unique_history_length = len(set(query.history))
         for candidate in selected:
             rows.append(
                 FusionTrainingRow(
                     query_key=key,
                     movie_id=candidate.movie_id,
-                    features=feature_builder.features_for(
-                        candidate.movie_id, query_pools, query.history
+                    features=feature_builder._features_for_indexed(
+                        candidate.movie_id, evidence, unique_history_length
                     ),
-                    label=int(candidate.movie_id == query.gold_movie_id),
+                    label=int(candidate.movie_id in gold_ids),
                 )
             )
     return tuple(rows)
@@ -330,14 +355,26 @@ class LearnedHybridFusion:
         return self.training_status == "trained" and self._booster is not None
 
     def score(self, features: Sequence[float]) -> float:
+        return self.score_many((features,))[0]
+
+    def score_many(self, feature_rows: Sequence[Sequence[float]]) -> tuple[float, ...]:
+        """Score a Candidate Pool in one native LightGBM call."""
+
         if not self.is_trained:
             raise ValueError("untrained fallback has no learned score")
-        if len(features) != len(self.feature_names):
+        if any(len(features) != len(self.feature_names) for features in feature_rows):
             raise ValueError("fusion features do not match the classifier schema")
-        score_value = float(self._booster.predict([list(features)], num_threads=1)[0])
-        if not math.isfinite(score_value):
+        if not feature_rows:
+            return ()
+        scores = tuple(
+            float(score)
+            for score in self._booster.predict(
+                [list(features) for features in feature_rows], num_threads=1
+            )
+        )
+        if len(scores) != len(feature_rows) or not all(math.isfinite(score) for score in scores):
             raise ValueError("LightGBM produced a non-finite fusion score")
-        return score_value
+        return scores
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -628,13 +665,14 @@ def rank_lhf_union(
             for rank, item in enumerate(fallback_ordered[:top_n], start=1)
         )
 
-    scored = [
-        (
-            candidate.movie_id,
-            classifier.score(feature_builder.features_for(candidate.movie_id, pools, history)),
-        )
+    evidence = _index_pool_evidence(pools, feature_builder.retriever_bank)
+    unique_history_length = len(set(history))
+    feature_rows = tuple(
+        feature_builder._features_for_indexed(candidate.movie_id, evidence, unique_history_length)
         for candidate in union
-    ]
+    )
+    scores = classifier.score_many(feature_rows)
+    scored = [(candidate.movie_id, score) for candidate, score in zip(union, scores, strict=True)]
     scored_ordered: list[tuple[int, float]] = sorted(scored, key=lambda item: (-item[1], item[0]))[
         :top_n
     ]

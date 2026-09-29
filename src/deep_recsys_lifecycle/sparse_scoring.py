@@ -43,27 +43,39 @@ class SparseItemKNNScorer:
             (np.ones(edge_count, dtype=np.float64), (rows, columns)),
             shape=(len(subject_index), len(catalog)),
         )
+        # Column slicing touches only the observed Movies instead of scanning every
+        # Positive Interaction for the first matrix product on each Query.
+        self.matrix_by_movie = self.matrix.tocsc()
         self.movie_counts = np.asarray(self.matrix.sum(axis=0)).ravel()
+        self.denominators = np.sqrt(np.maximum(self.movie_counts, 1.0))
         self.movie_ids = np.asarray(catalog, dtype=np.int64)
 
     def candidate_pool(self, history: Collection[int], limit: int) -> tuple[Candidate, ...]:
-        query = np.zeros(len(self.catalog), dtype=np.float64)
         excluded: list[int] = []
         for movie_id in set(history):
             index = self.movie_index.get(movie_id)
             if index is not None:
                 excluded.append(index)
-                count = self.movie_counts[index]
-                if count:
-                    query[index] = 1.0 / sqrt(float(count))
-        subject_weights = self.matrix @ query
-        scores = np.asarray(self.matrix.T @ subject_weights).ravel()
-        denominators = np.sqrt(np.maximum(self.movie_counts, 1.0))
-        scores /= denominators
+        observed = sorted(index for index in excluded if self.movie_counts[index])
+        if observed:
+            weights = np.fromiter(
+                (1.0 / sqrt(float(self.movie_counts[index])) for index in observed),
+                dtype=np.float64,
+                count=len(observed),
+            )
+            subject_weights = self.matrix_by_movie[:, observed] @ weights
+            scores = np.asarray(self.matrix.T @ subject_weights).ravel()
+            scores /= self.denominators
+        else:
+            scores = np.zeros(len(self.catalog), dtype=np.float64)
         if excluded:
             scores[np.asarray(excluded, dtype=np.int32)] = -np.inf
-        order = np.lexsort((self.movie_ids, -scores))
-        order = order[np.isfinite(scores[order])][:limit]
+        finite = np.flatnonzero(np.isfinite(scores))
+        if 0 < limit < len(finite):
+            finite_scores = scores[finite]
+            threshold = np.partition(finite_scores, len(finite) - limit)[len(finite) - limit]
+            finite = finite[finite_scores >= threshold]
+        order = finite[np.lexsort((self.movie_ids[finite], -scores[finite]))][:limit]
         return tuple(
             Candidate(movie_id=int(self.movie_ids[index]), score=float(scores[index]), rank=rank)
             for rank, index in enumerate(order, start=1)
