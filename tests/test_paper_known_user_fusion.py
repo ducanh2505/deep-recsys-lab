@@ -17,6 +17,7 @@ from deep_recsys_lifecycle.paper_known_user_fusion import (
     run_known_user_hybrid_benchmark,
     write_known_user_hybrid_report,
 )
+from deep_recsys_lifecycle.paper_screening import fixture_test_access
 
 
 def _events() -> tuple[RatingEvent, ...]:
@@ -110,8 +111,7 @@ def test_public_known_user_hybrid_uses_train_only_evidence_and_final_lhf_order(t
     assert report["configuration"]["inner_fold_count"] == 1
     assert "test_metrics" not in report
     assert all(
-        "test_movie_ids" not in split
-        for split in report["split_membership_by_subject"].values()
+        "test_movie_ids" not in split for split in report["split_membership_by_subject"].values()
     )
     assert all(not split.test_movie_ids for split in result.split_by_subject.values())
     assert set(report["evaluation"]) >= {"source_pools", "oracle_union", "final_lhf"}
@@ -132,14 +132,10 @@ def test_public_known_user_hybrid_uses_train_only_evidence_and_final_lhf_order(t
         for movie_id in split.train_movie_ids
     }
     fit_event_ids = {
-        event.event_id
-        for event in events
-        if (event.subject_id, event.movie_id) in fit_pairs
+        event.event_id for event in events if (event.subject_id, event.movie_id) in fit_pairs
     }
     reserved_event_ids = {
-        event.event_id
-        for event in events
-        if (event.subject_id, event.movie_id) not in fit_pairs
+        event.event_id for event in events if (event.subject_id, event.movie_id) not in fit_pairs
     }
     inner_gold_event_ids = set(result.fusion.training_metadata["validation_event_ids"])
     assert inner_gold_event_ids
@@ -147,9 +143,7 @@ def test_public_known_user_hybrid_uses_train_only_evidence_and_final_lhf_order(t
     assert not inner_gold_event_ids & reserved_event_ids
     assert sum(row.label for row in result.inner_training_rows) >= 2
     assert all(row.movie_id in result.training_catalog for row in result.inner_training_rows)
-    expected_popularity = Counter(
-        movie_id for _subject_id, movie_id in fit_pairs
-    )
+    expected_popularity = Counter(movie_id for _subject_id, movie_id in fit_pairs)
     assert result._feature_builder.item_popularity == expected_popularity
     assert 99 not in result.training_catalog
     assert 99 not in result._feature_builder.item_popularity
@@ -184,11 +178,14 @@ def test_public_known_user_hybrid_uses_train_only_evidence_and_final_lhf_order(t
         / len(result.validation_subject_metrics)
     )
 
-    frozen_test = evaluate_known_user_frozen_test(result)
+    frozen_test = evaluate_known_user_frozen_test(
+        result, test_access=fixture_test_access("known_user")
+    )
     assert frozen_test["evaluated_partition"] == "test"
-    assert frozen_test["training_snapshot_fingerprint"] == report["training"][
-        "outer_snapshot_fingerprint"
-    ]
+    assert (
+        frozen_test["training_snapshot_fingerprint"]
+        == report["training"]["outer_snapshot_fingerprint"]
+    )
     assert result.to_dict()["test_status"] == "sealed"
     path = write_known_user_hybrid_report(result, tmp_path / "paper" / "validation.json")
     assert json.loads(path.read_text(encoding="utf-8")) == report

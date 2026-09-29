@@ -31,6 +31,49 @@ ScreenRunner = Callable[
 
 
 @dataclass(frozen=True, slots=True)
+class FrozenTestAccess:
+    """A persisted two-mode freeze path, or an explicit non-MovieLens fixture receipt."""
+
+    mode: ScreenMode
+    freeze_path: Path | None = None
+
+    def require(
+        self,
+        *,
+        mode: ScreenMode,
+        source_sha256: str | None,
+        configuration_sha256: str,
+        validation_cohort_sha256: str,
+        test_membership_sha256: str,
+    ) -> None:
+        if mode != self.mode:
+            raise ValueError("test access Query mode differs")
+        if self.freeze_path is None:
+            if source_sha256 is not None:
+                raise ValueError("fixture receipt cannot open MovieLens test")
+            return
+        frozen = PaperScreenWorkspace(self.freeze_path.parent).require_frozen_selection()
+        entry = _mapping(_mapping(frozen["modes"], "frozen modes")[mode], "frozen mode")
+        if configuration_sha256 not in {
+            entry["baseline_configuration_sha256"],
+            entry["selected_configuration_sha256"],
+        }:
+            raise ValueError("test configuration was not frozen")
+        if (
+            source_sha256 != _mapping(entry["source"], "source")["dataset_sha256"]
+            or validation_cohort_sha256 != entry["validation_cohort_sha256"]
+            or test_membership_sha256 != entry["sealed_test_membership_sha256"]
+        ):
+            raise ValueError("test cohort differs from frozen validation selection")
+
+
+def fixture_test_access(mode: ScreenMode) -> FrozenTestAccess:
+    """Allow an explicit deterministic Rating Event fixture to exercise the test formulas."""
+
+    return FrozenTestAccess(mode=mode)
+
+
+@dataclass(frozen=True, slots=True)
 class ScreenAxis:
     name: str
     paths: tuple[str, ...]
@@ -498,7 +541,12 @@ def default_screen_runner(
 def baseline_configuration(mode: ScreenMode) -> dict[str, object]:
     if mode == "known_user":
         return KnownUserHybridConfig().to_dict()
-    value = HistoryOnlyBenchmarkConfig()
+    return history_screen_configuration(HistoryOnlyBenchmarkConfig())
+
+
+def history_screen_configuration(value: HistoryOnlyBenchmarkConfig) -> dict[str, object]:
+    """Exact registered form of a History-Only benchmark configuration."""
+
     return {
         "seed": value.seed,
         "validation_subject_count": value.validation_subject_count,
@@ -882,6 +930,10 @@ class PaperScreenWorkspace:
             ):
                 raise ValueError("frozen run or cohort changed")
         return frozen
+
+    def test_access(self, mode: ScreenMode) -> FrozenTestAccess:
+        self.require_frozen_selection()
+        return FrozenTestAccess(mode=mode, freeze_path=self.root / "freeze.json")
 
 
 def _file_sha256(path: Path) -> str:

@@ -182,9 +182,6 @@ def history_only_benchmark(
     test_subject_count: Annotated[
         int, typer.Option(help="Disjoint test Subject count; MovieLens 20M default is 10,000.")
     ] = 10_000,
-    evaluate_test: Annotated[
-        bool, typer.Option(help="Reveal test metrics only after the configuration is frozen.")
-    ] = False,
 ) -> None:
     """Fit the three-retriever History-Only hybrid and report validation only."""
 
@@ -194,7 +191,7 @@ def history_only_benchmark(
         test_subject_count=test_subject_count,
     )
     source = prepare_movielens_20m(cache)
-    benchmark = run_history_only_benchmark(source, config=config, evaluate_test=evaluate_test)
+    benchmark = run_history_only_benchmark(source, config=config, evaluate_test=False)
     report_path = write_history_only_benchmark_report(benchmark, output)
     typer.echo(f"History-Only benchmark report: {report_path}")
 

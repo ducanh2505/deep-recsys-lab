@@ -20,6 +20,7 @@ from deep_recsys_lifecycle.history_only_benchmark import (
     write_history_only_benchmark_report,
 )
 from deep_recsys_lifecycle.models import Candidate, RatingEvent
+from deep_recsys_lifecycle.paper_screening import fixture_test_access
 
 _SMALL_CONFIG = HistoryOnlyBenchmarkConfig(
     seed=42, validation_subject_count=2, test_subject_count=2
@@ -67,8 +68,18 @@ def _trained_events() -> tuple[RatingEvent, ...]:
 
 def test_history_only_public_run_has_disjoint_subjects_and_complete_fold_in() -> None:
     events = _public_events()
-    result = run_history_only_benchmark(events, config=_SMALL_CONFIG, evaluate_test=True)
-    replay = run_history_only_benchmark(reversed(events), config=_SMALL_CONFIG, evaluate_test=True)
+    result = run_history_only_benchmark(
+        events,
+        config=_SMALL_CONFIG,
+        evaluate_test=True,
+        test_access=fixture_test_access("history_only"),
+    )
+    replay = run_history_only_benchmark(
+        reversed(events),
+        config=_SMALL_CONFIG,
+        evaluate_test=True,
+        test_access=fixture_test_access("history_only"),
+    )
     report = result.to_dict()
 
     assert result.cohort_subject_ids == {
@@ -166,7 +177,10 @@ def test_history_only_public_run_records_catalog_exclusions_and_no_identity_in_q
 
 def test_history_only_public_metrics_use_final_lhf_order_and_report_source_diagnostics() -> None:
     report = run_history_only_benchmark(
-        _public_events(), config=_SMALL_CONFIG, evaluate_test=True
+        _public_events(),
+        config=_SMALL_CONFIG,
+        evaluate_test=True,
+        test_access=fixture_test_access("history_only"),
     ).to_dict()
     validation = report["diagnostics"]["validation"]["sources"]["popularity"]
     test = report["diagnostics"]["test"]["sources"]["popularity"]
@@ -201,6 +215,7 @@ def test_history_only_does_not_insert_gold_into_top_100() -> None:
         _public_events(late_test_gold=True),
         config=replace(_SMALL_CONFIG, candidate_pool_limit=20, capture_evidence=True),
         evaluate_test=True,
+        test_access=fixture_test_access("history_only"),
     )
 
     assert result.gold_sets[3] == (111,)
@@ -208,9 +223,9 @@ def test_history_only_does_not_insert_gold_into_top_100() -> None:
     assert all(111 not in movie_ids for movie_ids in pools["sources"].values())
     assert 111 not in pools["oracle_union_movie_ids"]
     assert 111 not in pools["final_lhf_top100_movie_ids"]
-    assert result.to_dict()["diagnostics"]["test"]["oracle_union"][
-        "retrieved_gold_movie_count"
-    ] < 13
+    assert (
+        result.to_dict()["diagnostics"]["test"]["oracle_union"]["retrieved_gold_movie_count"] < 13
+    )
 
 
 def test_history_only_fusion_rows_label_all_natural_gold_without_insertion() -> None:
@@ -220,9 +235,7 @@ def test_history_only_fusion_rows_label_all_natural_gold_without_insertion() -> 
         catalog=(1, 2, 3, 4, 5, 6),
         item_popularity={1: 5, 2: 3, 3: 1},
     )
-    query = HistoryOnlyFusionQuery(
-        pool_key="inner-000000", history=(), gold_movie_ids=(2, 3, 4)
-    )
+    query = HistoryOnlyFusionQuery(pool_key="inner-000000", history=(), gold_movie_ids=(2, 3, 4))
     pools = {
         query.pool_key: {
             "popularity": (
@@ -255,6 +268,7 @@ def test_history_only_public_run_trains_disjoint_fusion_and_reports_top100() -> 
         events,
         config=replace(_SMALL_CONFIG, capture_evidence=True),
         evaluate_test=True,
+        test_access=fixture_test_access("history_only"),
     )
     report = result.to_dict()
     cohorts = result.cohort_subject_ids
@@ -285,9 +299,10 @@ def test_history_only_public_run_trains_disjoint_fusion_and_reports_top100() -> 
             for event in sorted(events, key=lambda event: (event.subject_id, event.movie_id))
             if event.subject_id in subject_ids
         )
-        assert fusion_report[fingerprint_key] == sha256(
-            "".join(f"{event_id}\n" for event_id in expected_ids).encode()
-        ).hexdigest()
+        assert (
+            fusion_report[fingerprint_key]
+            == sha256("".join(f"{event_id}\n" for event_id in expected_ids).encode()).hexdigest()
+        )
     assert fusion_report["positive_training_row_count"] >= 2
     assert fusion_report["negative_training_row_count"] >= 2
     assert len(result.fusion_training_rows) == fusion_report["training_row_count"]
@@ -316,9 +331,7 @@ def test_history_only_public_run_trains_disjoint_fusion_and_reports_top100() -> 
             assert set(pools["sources"]) == {"popularity", "itemknn", "multivae"}
             assert len(pools["final_lhf_top100_movie_ids"]) == 100
             assert len(set(pools["final_lhf_top100_movie_ids"])) == 100
-            assert set(pools["final_lhf_top100_movie_ids"]) <= set(
-                pools["oracle_union_movie_ids"]
-            )
+            assert set(pools["final_lhf_top100_movie_ids"]) <= set(pools["oracle_union_movie_ids"])
             assert 999 not in pools["final_lhf_top100_movie_ids"]
             assert subject_id in report["held_out_subject_splits"][cohort]
 
@@ -353,7 +366,12 @@ def test_history_only_seals_test_scores_until_explicit_final_evaluation(tmp_path
     assert set(evidence.to_dict()["candidate_pools"]) == {"validation"}
     assert set(evidence.split_by_subject) == {2, 6}
 
-    final = run_history_only_benchmark(events, config=_SMALL_CONFIG, evaluate_test=True)
+    final = run_history_only_benchmark(
+        events,
+        config=_SMALL_CONFIG,
+        evaluate_test=True,
+        test_access=fixture_test_access("history_only"),
+    )
     assert final.to_dict()["metrics"]["validation"] == saved["metrics"]["validation"]
     assert final.to_dict()["held_out_subject_splits"]["test"]["3"]["eligible_gold_movie_ids"] == [
         45

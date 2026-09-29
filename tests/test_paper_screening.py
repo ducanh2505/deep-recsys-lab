@@ -7,10 +7,12 @@ from typing import Any
 
 import pytest
 
+from deep_recsys_lifecycle.models import RatingEvent
 from deep_recsys_lifecycle.paper_screening import (
     PaperScreenWorkspace,
     ScreenAxis,
     baseline_configuration,
+    fixture_test_access,
     initial_axes,
 )
 
@@ -62,7 +64,9 @@ def _runner(_events: object, mode: str, configuration: dict[str, Any]) -> dict[s
             "test_status": "sealed",
             "configuration": configuration,
             "split_membership_sha256": {
-                "train": "train-fixed", "validation": "validation-fixed", "test": "test-sealed"
+                "train": "train-fixed",
+                "validation": "validation-fixed",
+                "test": "test-sealed",
             },
             "validation_gold_sets_by_subject": {"1": [3], "2": [4]},
             "validation_subject_metrics": rows,
@@ -109,7 +113,9 @@ def _runner(_events: object, mode: str, configuration: dict[str, Any]) -> dict[s
 
 def _screen(root: Path, sealed_test_gold: list[int]) -> tuple[PaperScreenWorkspace, dict[str, Any]]:
     axis = ScreenAxis(
-        "multivae_dropout", ("multivae.dropout",), (0.2, 0.5),
+        "multivae_dropout",
+        ("multivae.dropout",),
+        (0.2, 0.5),
         "Outside source pools is the largest addressable #47 loss.",
     )
     workspace = PaperScreenWorkspace.create(
@@ -136,9 +142,10 @@ def _screen(root: Path, sealed_test_gold: list[int]) -> tuple[PaperScreenWorkspa
             configuration=config,
         )
         record = workspace.run_registered(f"known-dropout-{index}", (), runner=_runner)
-        assert record["validation_cohort_sha256"] == workspace.completed_runs("known_user")[
-            known_baseline
-        ]["validation_cohort_sha256"]
+        assert (
+            record["validation_cohort_sha256"]
+            == workspace.completed_runs("known_user")[known_baseline]["validation_cohort_sha256"]
+        )
     return workspace, workspace.select_and_freeze(bootstrap_draws=200)
 
 
@@ -167,15 +174,19 @@ def test_public_screen_matches_cohort_breaks_recall_tie_and_ignores_test_labels(
         assert "sealed-test" not in record
     with pytest.raises(ValueError, match="frozen"):
         first.register_additional(
-            run_id="after-freeze", mode="known_user", reference_run_id="known-dropout-0",
-            configuration=baseline_configuration("known_user"), rationale="too late",
+            run_id="after-freeze",
+            mode="known_user",
+            reference_run_id="known-dropout-0",
+            configuration=baseline_configuration("known_user"),
+            rationale="too late",
         )
 
 
 def test_unplanned_factor_value_and_test_scoring_are_rejected(tmp_path: Path) -> None:
     axis = ScreenAxis("multivae_dropout", ("multivae.dropout",), (0.2, 0.5), "Measured loss")
     workspace = PaperScreenWorkspace.create(
-        tmp_path, source_sha256=None,
+        tmp_path,
+        source_sha256=None,
         axes_by_mode={"known_user": (axis,), "history_only": ()},
     )
     baseline = workspace.register_baseline("known_user")
@@ -184,8 +195,12 @@ def test_unplanned_factor_value_and_test_scoring_are_rejected(tmp_path: Path) ->
     config["multivae"]["dropout"] = 0.3
     with pytest.raises(ValueError, match="preregistered alternative"):
         workspace.register_variant(
-            run_id="not-planned", mode="known_user", axis_name="multivae_dropout",
-            alternative_index=0, reference_run_id=baseline, configuration=config,
+            run_id="not-planned",
+            mode="known_user",
+            axis_name="multivae_dropout",
+            alternative_index=0,
+            reference_run_id=baseline,
+            configuration=config,
         )
     with pytest.raises(FileNotFoundError):
         workspace.require_frozen_selection()
@@ -199,3 +214,87 @@ def test_unplanned_factor_value_and_test_scoring_are_rejected(tmp_path: Path) ->
     with pytest.raises(ValueError, match="test metrics"):
         workspace.run_registered(history, (), runner=leaky_runner)
     assert not workspace.completed_runs("history_only")
+
+
+def test_real_known_user_pipeline_refits_fusion_on_the_same_validation_cohort(
+    tmp_path: Path,
+) -> None:
+    events = tuple(
+        RatingEvent.from_movielens(
+            subject_id=subject_id,
+            movie_id=movie_id,
+            rating=5.0,
+            event_time=subject_id * 1_000 + movie_id,
+        )
+        for subject_id in (2, 28, 29, 34, 42, 44, 46, 53, 70, 71)
+        for movie_id in (*range(1, 41), 99)
+    )
+    baseline_config = baseline_configuration("known_user")
+    baseline_config["multivae"]["hidden_dim"] = 8
+    baseline_config["multivae"]["latent_dim"] = 4
+    baseline_config["lightgcn"]["embedding_dim"] = 8
+    axis = ScreenAxis(
+        "multivae_dropout",
+        ("multivae.dropout",),
+        (0.2, 0.5),
+        "Train-only representation alternative",
+    )
+    screen = PaperScreenWorkspace.create(
+        tmp_path,
+        source_sha256=None,
+        axes_by_mode={"known_user": (axis,), "history_only": ()},
+        baseline_configs={
+            "known_user": baseline_config,
+            "history_only": baseline_configuration("history_only"),
+        },
+    )
+    baseline_id = screen.register_baseline("known_user")
+    baseline = screen.run_registered(baseline_id, events)
+    variant_config = deepcopy(baseline_config)
+    variant_config["multivae"]["dropout"] = 0.2
+    screen.register_variant(
+        run_id="known-dropout-0",
+        mode="known_user",
+        axis_name="multivae_dropout",
+        alternative_index=0,
+        reference_run_id=baseline_id,
+        configuration=variant_config,
+    )
+    variant = screen.run_registered("known-dropout-0", events)
+
+    assert variant["validation_cohort_sha256"] == baseline["validation_cohort_sha256"]
+    assert variant["configuration"]["multivae"]["dropout"] == 0.2
+    assert set(screen.validation_subjects("known-dropout-0")) == set(
+        screen.validation_subjects(baseline_id)
+    )
+    assert variant["metrics"]["query_count"] == baseline["metrics"]["query_count"]
+    assert variant["source_pools"].keys() == baseline["source_pools"].keys()
+    assert variant["run_identity"] == baseline["run_identity"]
+    assert "test" not in variant
+
+
+def test_frozen_receipt_checks_mode_cohort_and_both_configuration_hashes(
+    tmp_path: Path,
+) -> None:
+    screen, freeze = _screen(tmp_path, [7, 8])
+    known = freeze["modes"]["known_user"]
+    receipt = screen.test_access("known_user")
+    checks = {
+        "mode": "known_user",
+        "source_sha256": None,
+        "configuration_sha256": known["selected_configuration_sha256"],
+        "validation_cohort_sha256": known["validation_cohort_sha256"],
+        "test_membership_sha256": known["sealed_test_membership_sha256"],
+    }
+    receipt.require(**checks)
+    receipt.require(**{**checks, "configuration_sha256": known["baseline_configuration_sha256"]})
+    with pytest.raises(ValueError, match="configuration"):
+        receipt.require(**{**checks, "configuration_sha256": "wrong"})
+    with pytest.raises(ValueError, match="cohort"):
+        receipt.require(**{**checks, "test_membership_sha256": "wrong"})
+    with pytest.raises(ValueError, match="mode"):
+        receipt.require(**{**checks, "mode": "history_only"})
+    with pytest.raises(ValueError, match="fixture receipt"):
+        fixture_test_access("known_user").require(
+            **{**checks, "source_sha256": "MovieLens-checksum"}
+        )

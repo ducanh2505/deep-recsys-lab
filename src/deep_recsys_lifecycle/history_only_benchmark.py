@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic
+from typing import TYPE_CHECKING
 
 from .event_store import DataSnapshot
 from .fusion import (
@@ -28,6 +29,9 @@ from .paper_diagnostics import PaperGoldDiagnostics
 from .paper_measurements import peak_rss_bytes, run_identity, summarize_query_latency
 from .popularity import fit_popularity
 from .retriever import CandidateRetriever, candidate_pool_for_query, validate_candidate_pool_limit
+
+if TYPE_CHECKING:
+    from .paper_screening import FrozenTestAccess
 
 POSITIVE_RATING_THRESHOLD = 4.0
 MIN_POSITIVE_INTERACTIONS = 5
@@ -120,10 +124,13 @@ def run_history_only_benchmark(
     *,
     config: HistoryOnlyBenchmarkConfig | None = None,
     evaluate_test: bool = False,
+    test_access: FrozenTestAccess | None = None,
 ) -> HistoryOnlyBenchmarkResult:
     """Run the disjoint-Subject split with a three-source History-Only LHF baseline."""
 
     config = config or HistoryOnlyBenchmarkConfig()
+    if evaluate_test and test_access is None:
+        raise ValueError("frozen test access receipt is required")
     run_started = monotonic()
     dataset_checksum = getattr(events, "dataset_checksum", None)
     subject_events: defaultdict[int, dict[int, RatingEvent]] = defaultdict(dict)
@@ -214,13 +221,9 @@ def run_history_only_benchmark(
     inner_fit_event_ids_sha256: str | None = None
     inner_feature_builder: FusionFeatureBuilder | None = None
     if inner_fit_ids:
-        inner_events = _events_for_subjects(
-            inner_fit_ids, eligible_subject_movies, subject_events
-        )
+        inner_events = _events_for_subjects(inner_fit_ids, eligible_subject_movies, subject_events)
         inner_snapshot = DataSnapshot.from_events(inner_events)
-        inner_bank = _fit_retriever_bank(
-            inner_snapshot, config=config, seed=config.seed
-        )
+        inner_bank = _fit_retriever_bank(inner_snapshot, config=config, seed=config.seed)
         inner_catalog = {event.movie_id for event in inner_snapshot.events}
         for index, subject_id in enumerate(inner_pseudo_ids):
             fold_in, held_out = _fold_in_split(
@@ -341,6 +344,51 @@ def run_history_only_benchmark(
     eligible_subject_count = len(eligible_subject_movies)
     retained_positive_count = sum(map(len, eligible_subject_movies.values()))
     del eligible_subject_movies
+
+    if evaluate_test:
+        from .paper_screening import _digest, _validation_seal, history_screen_configuration
+
+        assert test_access is not None
+        source_sha256 = dataset_checksum if isinstance(dataset_checksum, str) else None
+        seal = _validation_seal(
+            {
+                "source": {
+                    "name": "MovieLens 20M" if source_sha256 is not None else "Rating Events",
+                    "dataset_sha256": source_sha256,
+                    "input_event_fingerprint_sha256": input_fingerprint,
+                },
+                "training_catalog_movie_ids": sorted(training_catalog),
+                "cohort_subject_ids": cohorts,
+                "held_out_subject_splits": {
+                    "validation": {
+                        str(subject_id): _split_to_dict(split_by_subject[subject_id])
+                        for subject_id in cohorts["validation"]
+                    },
+                    "test": {
+                        "status": "sealed",
+                        "membership_sha256": _test_split_fingerprint(
+                            cohorts["test"], split_by_subject
+                        ),
+                    },
+                },
+                "fusion_training": {
+                    "outer_fit_event_ids_sha256": outer_fit_event_ids_sha256,
+                    "inner_fit_event_ids_sha256": inner_fit_event_ids_sha256,
+                    "inner_pseudo_held_out_subject_ids_sha256": _subject_ids_fingerprint(
+                        inner_pseudo_ids
+                    ),
+                },
+                "reproducibility": {"split_seed": config.seed},
+            },
+            "history_only",
+        )
+        test_access.require(
+            mode="history_only",
+            source_sha256=source_sha256,
+            configuration_sha256=_digest(history_screen_configuration(config)),
+            validation_cohort_sha256=str(seal["validation_cohort_sha256"]),
+            test_membership_sha256=str(seal["test_membership_sha256"]),
+        )
 
     cohort_counts = {
         "validation": _cohort_counts(cohorts["validation"], split_by_subject, gold_sets)
@@ -467,9 +515,7 @@ def run_history_only_benchmark(
             "positive_interaction_count_removed_with_short_subjects": (
                 unique_positive_count - retained_positive_count
             ),
-            "subject_count_removed_with_fewer_than_five_positives": (
-                short_subject_count
-            ),
+            "subject_count_removed_with_fewer_than_five_positives": (short_subject_count),
             "validation": _cohort_exclusions(cohorts["validation"], split_by_subject),
             "test": (
                 _cohort_exclusions(cohorts["test"], split_by_subject)
@@ -490,9 +536,7 @@ def run_history_only_benchmark(
             "inner_fit_subject_count": len(inner_fit_ids),
             "inner_fit_subject_ids_sha256": _subject_ids_fingerprint(inner_fit_ids),
             "inner_pseudo_held_out_subject_count": len(inner_pseudo_ids),
-            "inner_pseudo_held_out_subject_ids_sha256": _subject_ids_fingerprint(
-                inner_pseudo_ids
-            ),
+            "inner_pseudo_held_out_subject_ids_sha256": _subject_ids_fingerprint(inner_pseudo_ids),
             "outer_fit_event_ids_sha256": outer_fit_event_ids_sha256,
             "inner_fit_event_ids_sha256": inner_fit_event_ids_sha256,
             "training_row_count": training_row_count,
@@ -504,9 +548,7 @@ def run_history_only_benchmark(
             },
         },
         "diagnostics": diagnostics,
-        "candidate_pools": (
-            candidate_pools if config.capture_evidence else {"status": "omitted"}
-        ),
+        "candidate_pools": (candidate_pools if config.capture_evidence else {"status": "omitted"}),
         "metrics": metrics,
         "runtime": {
             "split_seconds": split_seconds,
@@ -730,8 +772,7 @@ def _score_cohort(
             }
     final_metrics = final_accumulator.finish(training_catalog)
     source_metrics = {
-        name: source_accumulators[name].finish(training_catalog)
-        for name in HISTORY_ONLY_BANK
+        name: source_accumulators[name].finish(training_catalog) for name in HISTORY_ONLY_BANK
     }
     diagnostic = {
         "sources": source_metrics,
@@ -898,14 +939,8 @@ class _MetricAccumulator:
         divisor = self.query_count or 1
         return {
             "query_count": self.query_count,
-            **{
-                f"Recall@{cutoff}": total / divisor
-                for cutoff, total in self.recall_totals.items()
-            },
-            **{
-                f"NDCG@{cutoff}": total / divisor
-                for cutoff, total in self.ndcg_totals.items()
-            },
+            **{f"Recall@{cutoff}": total / divisor for cutoff, total in self.recall_totals.items()},
+            **{f"NDCG@{cutoff}": total / divisor for cutoff, total in self.ndcg_totals.items()},
             "QueryRetrievalCoverage@100": self.covered_queries / divisor,
             "CatalogCoverage@100": (
                 len(self.recommended_movies) / len(training_catalog)

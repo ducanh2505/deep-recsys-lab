@@ -7,6 +7,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic
+from typing import TYPE_CHECKING
 
 from .event_store import DataSnapshot
 from .fusion import (
@@ -41,6 +42,9 @@ from .paper_measurements import peak_rss_bytes, run_identity, summarize_query_la
 from .popularity import fit_popularity
 from .retriever import CandidateRetriever, candidate_pool_for_query, validate_candidate_pool_limit
 
+if TYPE_CHECKING:
+    from .paper_screening import FrozenTestAccess
+
 _BANK = FUSION_BANKS["known_user"]
 _INNER_HOLDOUT_FRACTION = 0.10
 
@@ -52,9 +56,7 @@ class KnownUserHybridConfig:
     inner_fold_count: int = 1
     pool_limit: int = 200
     max_negative_rows_per_query: int | None = 20
-    multivae: MultVAEConfig = field(
-        default_factory=lambda: MultVAEConfig(epochs=1, batch_size=256)
-    )
+    multivae: MultVAEConfig = field(default_factory=lambda: MultVAEConfig(epochs=1, batch_size=256))
     lightgcn: LightGCNConfig = field(
         default_factory=lambda: LightGCNConfig(epochs=1, batch_size=65_536)
     )
@@ -146,16 +148,11 @@ class _RankingMetrics:
             self.covered += 1
         for cutoff in METRIC_CUTOFFS:
             hits = [
-                positions[movie_id]
-                for movie_id in gold
-                if positions.get(movie_id, 101) <= cutoff
+                positions[movie_id] for movie_id in gold if positions.get(movie_id, 101) <= cutoff
             ]
             self.recall[cutoff] += len(hits) / len(gold)
             gain = sum(1.0 / math.log2(rank + 1) for rank in hits)
-            ideal = sum(
-                1.0 / math.log2(rank + 1)
-                for rank in range(1, min(cutoff, len(gold)) + 1)
-            )
+            ideal = sum(1.0 / math.log2(rank + 1) for rank in range(1, min(cutoff, len(gold)) + 1))
             self.ndcg[cutoff] += gain / ideal if ideal else 0.0
 
     def result(self) -> dict[str, int | float | None]:
@@ -198,9 +195,7 @@ class _UnionMetrics:
             "OracleUnionRecall": self.recall / divisor,
             "OracleUnionQueryCoverage": self.covered / divisor,
             "OracleUnionCatalogCoverage": (
-                len(self.movies) / len(self.catalog)
-                if self.catalog and self.query_count
-                else None
+                len(self.movies) / len(self.catalog) if self.catalog and self.query_count else None
             ),
             "pool_budget": "unbounded union of four source pools",
             "final_order": False,
@@ -255,7 +250,8 @@ def _split(
         key = (event.subject_id, event.movie_id)
         previous = by_pair.get(key)
         if previous is None or (event.event_time, event.event_id) < (
-            previous.event_time, previous.event_id
+            previous.event_time,
+            previous.event_id,
         ):
             by_pair[key] = event
     retained = _filter_to_k_core(by_pair, K_CORE_MIN_DEGREE)
@@ -461,13 +457,18 @@ def _evaluate(
                 "final_ranks": [item.rank for item in final],
             }
     final_result = final_metrics.result()
-    return {
-        "source_pools": {name: accumulator.result() for name, accumulator in sources.items()},
-        "oracle_union": union_metrics.result(),
-        "final_lhf": final_result,
-        "gold_loss": loss.finish(),
-        "inference_latency": summarize_query_latency(scoring_samples_ms, warmup_count=5),
-    }, final_rankings, subject_metrics, evidence
+    return (
+        {
+            "source_pools": {name: accumulator.result() for name, accumulator in sources.items()},
+            "oracle_union": union_metrics.result(),
+            "final_lhf": final_result,
+            "gold_loss": loss.finish(),
+            "inference_latency": summarize_query_latency(scoring_samples_ms, warmup_count=5),
+        },
+        final_rankings,
+        subject_metrics,
+        evidence,
+    )
 
 
 def run_known_user_hybrid_benchmark(
@@ -641,7 +642,8 @@ def run_known_user_hybrid_benchmark(
             ),
         },
         "validation_gold_sets_by_subject": {
-            str(query.subject_id): list(query.gold_movie_ids) for query in validation_queries
+            str(query.subject_id): list(query.gold_movie_ids)
+            for query in validation_queries
             if query.gold_movie_ids
         },
         "validation_subject_metrics": {
@@ -685,8 +687,7 @@ def run_known_user_hybrid_benchmark(
     return KnownUserHybridResult(
         report=report,
         split_by_subject={
-            subject_id: replace(split, test_movie_ids=())
-            for subject_id, split in splits.items()
+            subject_id: replace(split, test_movie_ids=()) for subject_id, split in splits.items()
         },
         training_catalog=outer_catalog,
         inner_training_rows=retained_rows,
@@ -705,9 +706,25 @@ def run_known_user_hybrid_benchmark(
 
 def evaluate_known_user_frozen_test(
     frozen: KnownUserHybridResult,
+    *,
+    test_access: FrozenTestAccess | None = None,
 ) -> dict[str, object]:
     """Open test only for an already selected, immutable hybrid fit."""
 
+    from .paper_screening import _digest, _validation_seal
+
+    if test_access is None:
+        raise ValueError("frozen test access receipt is required")
+    seal = _validation_seal(frozen.report, "known_user")
+    source = frozen.report["source"]
+    assert isinstance(source, Mapping)
+    test_access.require(
+        mode="known_user",
+        source_sha256=source["dataset_sha256"],
+        configuration_sha256=_digest(frozen._config.to_dict()),
+        validation_cohort_sha256=str(seal["validation_cohort_sha256"]),
+        test_membership_sha256=str(seal["test_membership_sha256"]),
+    )
     queries = _queries(
         frozen.split_by_subject,
         frozen.training_catalog,
