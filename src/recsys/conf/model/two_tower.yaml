@@ -1,4 +1,0 @@
-name: two_tower
-parameters:
-  embedding_dim: 32
-  steps: 100
