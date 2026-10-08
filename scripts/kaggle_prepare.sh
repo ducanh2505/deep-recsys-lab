@@ -7,11 +7,12 @@ ARCHIVE_SHA256="96f243c338a8665f6bcc89c53edf6ee39162a846940de6b7c8c48aeada765ff3
 CATALOG_INPUT="${CATALOG_INPUT:-}" # Optional exact paths if multiple inputs are attached.
 BASELINE_INPUT="${BASELINE_INPUT:-}"
 KAGGLE_INPUT_DIR="${KAGGLE_INPUT_DIR:-/kaggle/input}"
+CATALOG_DIR="${CATALOG_DIR:-$KAGGLE_INPUT_DIR/notebooks/danh99/cbf-lora}"
 
 cd "$REPO_DIR"
 
 # Validate both manual inputs before preparing data or downloading dependencies.
-python3 - "$CATALOG_INPUT" "$BASELINE_INPUT" "$KAGGLE_INPUT_DIR" <<'PY'
+python3 - "$CATALOG_INPUT" "$BASELINE_INPUT" "$KAGGLE_INPUT_DIR" "$CATALOG_DIR" <<'PY'
 import hashlib
 from pathlib import Path
 import shutil
@@ -29,8 +30,11 @@ copies = []
 for names, override, variable, expected, target in inputs:
     name = " / ".join(names)
     accepted = {value.casefold() for value in names}
+    search_root = Path(sys.argv[3])
+    if variable == "CATALOG_INPUT" and Path(sys.argv[4]).is_dir():
+        search_root = Path(sys.argv[4])
     candidates = [Path(override)] if override else sorted(
-        path for path in Path(sys.argv[3]).rglob("*")
+        path for path in search_root.rglob("*")
         if path.is_file() and path.name.casefold() in accepted
     )
     if len(candidates) != 1 or not candidates[0].is_file():
