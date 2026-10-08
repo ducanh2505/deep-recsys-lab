@@ -1,15 +1,7 @@
 .venv/
 data/
 __pycache__/
-artifacts/**/*.pt
-artifacts/content_multvae_ml20m/prepared/
-artifacts/content_multvae_ml20m/**/*.npy
-artifacts/content_multvae_ml20m/**/*.npz
-artifacts/content_multvae_ml20m/**/*.lock
-artifacts/content_multvae_ml20m/**/run.log
-artifacts/content_multvae_ml20m/benchmark.log
-artifacts/content_multvae_ml20m/launcher.json
-artifacts/content_report_smoke/
+artifacts/
 .env
 .env.*
 !.env.example
