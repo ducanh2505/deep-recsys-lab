@@ -18,16 +18,21 @@ import shutil
 import sys
 
 inputs = (
-    ("catalog.parquet", sys.argv[1], "CATALOG_INPUT",
+    (("catalog.parquet", "CBF-LORA", "CBF-LORA.parquet"), sys.argv[1], "CATALOG_INPUT",
      "c3f0151964ab04310b62c96547fddc0a5603df76d741cbb4b30e2c444de931a4",
      Path("data/processed/movie_content/catalog.parquet")),
-    ("best.pt", sys.argv[2], "BASELINE_INPUT",
+    (("best.pt",), sys.argv[2], "BASELINE_INPUT",
      "0732c4fbf21ed5259419dfbcb5cc4d56322e5b38fedb97f3f0ce99412440def2",
      Path("artifacts/multvae_ml20m/baseline_mps_seed42/best.pt")),
 )
 copies = []
-for name, override, variable, expected, target in inputs:
-    candidates = [Path(override)] if override else sorted(Path(sys.argv[3]).rglob(name))
+for names, override, variable, expected, target in inputs:
+    name = " / ".join(names)
+    accepted = {value.casefold() for value in names}
+    candidates = [Path(override)] if override else sorted(
+        path for path in Path(sys.argv[3]).rglob("*")
+        if path.is_file() and path.name.casefold() in accepted
+    )
     if len(candidates) != 1 or not candidates[0].is_file():
         raise SystemExit(f"Attach one {name}, or set {variable} to its exact path.")
     source = candidates[0]
