@@ -54,21 +54,28 @@ def ensure_frozen(prepared: Path, device: torch.device, batch_size: int = 8) -> 
 
 def _ensure_frozen(prepared: Path, device: torch.device, batch_size: int = 8) -> dict:
     """Resume catalog encoding at the last completed batch of each text view."""
+    started = time.monotonic()
+    emit(prepared, "frozen_preparation", stage="verify_prepared_inputs", device=str(device))
     data, _, tokens, manifest = load_prepared(prepared)
     cache = prepared / "frozen"
     cache.mkdir(exist_ok=True)
     result_path = cache / "manifest.json"
     if result_path.exists():
+        emit(cache, "frozen_preparation", stage="verify_cached_embeddings")
         result = json.loads(result_path.read_text())
         if result["prepared_fingerprint"] != manifest["fingerprint"]:
             raise ValueError("Frozen features do not match prepared inputs")
         for name, digest in result["artifacts"].items():
             if sha256(cache / name) != digest:
                 raise ValueError(f"Corrupt frozen cache: {name}")
+        emit(cache, "frozen_preparation", stage="complete", cached=True,
+             elapsed_seconds=time.monotonic() - started)
         return result
+    emit(cache, "frozen_preparation", stage="load_model", model=MODEL_ID, revision=REVISION,
+         device=str(device))
     encoder = TextEncoder(device)
     encoder.eval()
-    started = time.monotonic()
+    emit(cache, "frozen_preparation", stage="model_loaded", elapsed_seconds=time.monotonic() - started)
     for view, sequences in tokens.items():
         filename = cache / f"{view}.npy"
         progress_path = cache / f"{view}_progress.json"
@@ -83,26 +90,41 @@ def _ensure_frozen(prepared: Path, device: torch.device, batch_size: int = 8) ->
         else:
             values = np.lib.format.open_memmap(filename, mode="w+", dtype=np.float32, shape=(data.n_items, 1024))
             values[:] = 0
+        view_started = time.monotonic()
+        last_report = view_started
+        emit(cache, "frozen_encoding", view=view, completed=done, total=len(order),
+             percent=100.0 * done / len(order) if order else 100.0,
+             resumed=done > 0, elapsed_seconds=time.monotonic() - started)
         with torch.inference_mode():
             for offset in range(done, len(order), batch_size):
                 indices = order[offset:offset + batch_size]
                 values[indices] = encoder([sequences[i] for i in indices]).cpu().numpy()
                 values.flush()
                 write_json(progress_path, {"completed": offset + len(indices), "total": len(order)})
-                if offset == done or (offset // batch_size) % 50 == 0:
-                    emit(cache, "frozen_encoding", view=view, completed=offset + len(indices),
-                         total=len(order), elapsed_seconds=time.monotonic() - started)
+                completed = offset + len(indices)
+                now = time.monotonic()
+                if offset == done or now - last_report >= 10 or completed == len(order):
+                    rate = (completed - done) / max(now - view_started, 1e-9)
+                    emit(cache, "frozen_encoding", view=view, completed=completed,
+                         total=len(order), percent=100.0 * completed / len(order),
+                         movies_per_second=rate, eta_seconds=(len(order) - completed) / rate,
+                         elapsed_seconds=now - started)
+                    last_report = now
         del values
+    emit(cache, "frozen_preparation", stage="combine_multiview_embeddings")
     context = torch.from_numpy(np.load(prepared / "context.npy"))
     pieces = [torch.from_numpy(np.load(cache / f"{view}.npy")) for view in ("plot", "topic", "people")]
     pieces.append(F.normalize(context, dim=1))
     multi = F.normalize(torch.cat([value * weight**0.5 for value, weight in zip(pieces, BLOCK_WEIGHTS)], dim=1), dim=1)
     np.save(cache / "multi.npy", multi.numpy())
+    emit(cache, "frozen_preparation", stage="hash_embeddings")
     result = {"prepared_fingerprint": manifest["fingerprint"], "model": MODEL_ID, "revision": REVISION,
               "elapsed_seconds": time.monotonic() - started,
               "artifacts": {f"{view}.npy": sha256(cache / f"{view}.npy")
                             for view in ("single", "plot", "topic", "people", "multi")}}
     write_json(result_path, result)
+    emit(cache, "frozen_preparation", stage="complete", cached=False,
+         elapsed_seconds=time.monotonic() - started)
     return result
 
 

@@ -3,6 +3,7 @@
 from functools import lru_cache
 import json
 from pathlib import Path
+import time
 
 import numpy as np
 import polars as pl
@@ -10,7 +11,7 @@ import torch
 from torch.nn import functional as F
 from transformers import AutoTokenizer
 
-from content_recsys.common import MODEL_ID, REVISION, fingerprint, sha256, write_json, save_checkpoint
+from content_recsys.common import MODEL_ID, REVISION, emit, fingerprint, sha256, write_json, save_checkpoint
 from multvae.data import Dataset, Split, load_dataset
 from multvae.train import verify_checkpoint
 
@@ -101,53 +102,77 @@ def context_features(rows: list[dict]) -> tuple[np.ndarray, dict]:
 def prepare(data_dir: Path, catalog: Path, baseline: Path, output: Path) -> dict:
     """Audit the original splits and save ID-aligned reusable preparation artifacts."""
     output.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+
+    def progress(stage: str, **values: object) -> None:
+        emit(output, "content_preparation", stage=stage,
+             elapsed_seconds=time.monotonic() - started, **values)
+
+    progress("hash_inputs")
     source = {"catalog": sha256(catalog), "baseline": sha256(baseline),
               "splits": {name: sha256(data_dir / f"{name}.parquet") for name in ("train", "valid", "test")},
               "split_manifest": sha256(data_dir / "manifest.json"), "model": MODEL_ID,
               "revision": REVISION, "limits": LIMITS, "block_weights": BLOCK_WEIGHTS, "format": 2}
     manifest_path = output / "manifest.json"
     if manifest_path.exists():
+        progress("verify_cached_inputs")
         existing = json.loads(manifest_path.read_text())
         if existing["fingerprint"] != fingerprint(source):
             raise ValueError("Prepared inputs differ; choose a new output directory")
         load_prepared(output)
+        progress("complete", cached=True)
         return existing
+    progress("audit_splits")
     data = load_dataset(data_dir)
+    progress("verify_baseline", users=data.n_users, movies=data.n_items)
     checkpoint = torch.load(baseline, weights_only=True, map_location="cpu")
     verify_checkpoint(checkpoint, data)
+    progress("load_catalog")
     frame = pl.read_parquet(catalog)
     if frame["movieId"].n_unique() != frame.height or set(frame["movieId"].to_list()) != set(data.item_ids):
         raise ValueError("Catalog IDs must exactly match the unique checkpoint item set")
     by_id = {row["movieId"]: row for row in frame.iter_rows(named=True)}
     rows = [by_id[int(item)] for item in data.item_ids]
+    progress("build_context", movies=len(rows))
     contexts, metadata = context_features(rows)
+    progress("load_tokenizer", model=MODEL_ID, revision=REVISION)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=REVISION, padding_side="left")
+    progress("serialize_movie_texts", movies=len(rows))
     views = [movie_texts(row) for row in rows]
     tokens, truncation = {}, {}
     for view, limit in LIMITS.items():
+        progress("tokenize", view=view, completed=0, total=len(views))
         sequences = tokenizer([texts[view] for texts in views], truncation=False, padding=False)["input_ids"]
         sequences = [ids if texts[view] else [] for ids, texts in zip(sequences, views)]
         lengths = np.array([len(ids) for ids in sequences])
         tokens[view] = [torch.tensor(ids[:limit], dtype=torch.long) for ids in sequences]
         truncation[view] = {"limit": limit, "truncated": int((lengths > limit).sum()),
                             "fraction": float((lengths > limit).mean()), "missing": int((lengths == 0).sum())}
+        progress("tokenize", view=view, completed=len(views), total=len(views),
+                 percent=100.0, **truncation[view])
+    progress("save_tokens_and_context")
     save_checkpoint(output / "tokens.pt", tokens)
     np.save(output / "context.npy", contexts)
     write_json(output / "context.json", metadata)
     bundle = {"user_ids": torch.from_numpy(data.user_ids), "item_ids": torch.from_numpy(data.item_ids),
               "manifest": data.manifest, "audit": data.audit, "baseline": str(baseline.resolve())}
     for name in ("train", "valid", "test"):
+        progress("build_history", split=name)
         split = getattr(data, name)
         ratings = pl.read_parquet(data_dir / f"{name}.parquet").sort(["userId", "movieId"])["rating"].to_numpy()
         bundle[name] = {"items": torch.from_numpy(split.items), "offsets": torch.from_numpy(split.offsets),
                         "keys": torch.from_numpy(split.keys),
                         "rating_weights": torch.from_numpy((ratings - 3).astype(np.float32))}
+        progress("build_history", split=name, completed=len(split.items), total=len(split.items))
+    progress("save_history_bundle")
     save_checkpoint(output / "data.pt", bundle)
+    progress("hash_prepared_artifacts")
     manifest = {"fingerprint": fingerprint(source), "sources": source, "data_audit": data.audit,
                 "baseline": str(baseline.resolve()), "truncation": truncation,
                 "artifacts": {name: sha256(output / name) for name in
                               ("tokens.pt", "context.npy", "context.json", "data.pt")}}
     write_json(manifest_path, manifest)
+    progress("complete", cached=False, movies=len(rows))
     return manifest
 
 
