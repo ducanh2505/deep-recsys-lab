@@ -886,6 +886,7 @@ content = [
     { name = "huggingface-hub" },
     { name = "peft" },
     { name = "safetensors" },
+    { name = "tqdm" },
     { name = "transformers" },
 ]
 
@@ -899,6 +900,7 @@ requires-dist = [
     { name = "polars", specifier = ">=1.44.2" },
     { name = "safetensors", marker = "extra == 'content'", specifier = ">=0.6,<1" },
     { name = "torch", specifier = ">=2.14.0" },
+    { name = "tqdm", marker = "extra == 'content'", specifier = ">=4.67,<5" },
     { name = "transformers", marker = "extra == 'content'", specifier = ">=4.51.0,<5" },
 ]
 provides-extras = ["content"]

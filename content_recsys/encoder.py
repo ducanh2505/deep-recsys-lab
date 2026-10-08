@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
+from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 from peft import LoraConfig, TaskType, get_peft_model
 
@@ -90,26 +91,19 @@ def _ensure_frozen(prepared: Path, device: torch.device, batch_size: int = 8) ->
         else:
             values = np.lib.format.open_memmap(filename, mode="w+", dtype=np.float32, shape=(data.n_items, 1024))
             values[:] = 0
-        view_started = time.monotonic()
-        last_report = view_started
         emit(cache, "frozen_encoding", view=view, completed=done, total=len(order),
              percent=100.0 * done / len(order) if order else 100.0,
              resumed=done > 0, elapsed_seconds=time.monotonic() - started)
-        with torch.inference_mode():
+        with torch.inference_mode(), tqdm(total=len(order), initial=done, desc=f"Encode {view}",
+                                          unit="movie", dynamic_ncols=True, mininterval=1.0) as bar:
             for offset in range(done, len(order), batch_size):
                 indices = order[offset:offset + batch_size]
                 values[indices] = encoder([sequences[i] for i in indices]).cpu().numpy()
                 values.flush()
                 write_json(progress_path, {"completed": offset + len(indices), "total": len(order)})
-                completed = offset + len(indices)
-                now = time.monotonic()
-                if offset == done or now - last_report >= 10 or completed == len(order):
-                    rate = (completed - done) / max(now - view_started, 1e-9)
-                    emit(cache, "frozen_encoding", view=view, completed=completed,
-                         total=len(order), percent=100.0 * completed / len(order),
-                         movies_per_second=rate, eta_seconds=(len(order) - completed) / rate,
-                         elapsed_seconds=now - started)
-                    last_report = now
+                bar.update(len(indices))
+        emit(cache, "frozen_encoding", view=view, completed=len(order), total=len(order),
+             percent=100.0, elapsed_seconds=time.monotonic() - started)
         del values
     emit(cache, "frozen_preparation", stage="combine_multiview_embeddings")
     context = torch.from_numpy(np.load(prepared / "context.npy"))

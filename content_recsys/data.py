@@ -9,6 +9,7 @@ import numpy as np
 import polars as pl
 import torch
 from torch.nn import functional as F
+from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from content_recsys.common import MODEL_ID, REVISION, emit, fingerprint, sha256, write_json, save_checkpoint
@@ -17,6 +18,7 @@ from multvae.train import verify_checkpoint
 
 LIMITS = {"single": 512, "plot": 384, "topic": 192, "people": 192}
 BLOCK_WEIGHTS = (0.50, 0.25, 0.15, 0.10)
+TOKENIZE_BATCH_SIZE = 256
 
 
 def names(entries: list | None, limit: int, ordered: bool = False) -> str:
@@ -79,13 +81,13 @@ def context_features(rows: list[dict]) -> tuple[np.ndarray, dict]:
         std = float(observed.std()) if len(observed) else 1.0
         std = max(std, 1e-8)
         stats[field] = {"mean": mean, "std": std}
-        for i, row in enumerate(safe):
+        for i, row in enumerate(tqdm(safe, desc=f"Context: {field}", unit="movie", dynamic_ncols=True)):
             if row.get(field) is None:
                 values[i, categorical_size + 2 + offset] = 1
             else:
                 values[i, categorical_size + offset] = np.clip((row[field] - mean) / std, -3, 3)
     present = []
-    for i, row in enumerate(safe):
+    for i, row in enumerate(tqdm(safe, desc="Context: categories", unit="movie", dynamic_ncols=True)):
         if row.get("original_language"):
             values[i, language_ids[row["original_language"]]] = 1
         for country in row.get("production_countries") or []:
@@ -138,11 +140,17 @@ def prepare(data_dir: Path, catalog: Path, baseline: Path, output: Path) -> dict
     progress("load_tokenizer", model=MODEL_ID, revision=REVISION)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=REVISION, padding_side="left")
     progress("serialize_movie_texts", movies=len(rows))
-    views = [movie_texts(row) for row in rows]
+    views = [movie_texts(row) for row in tqdm(rows, desc="Movie texts", unit="movie", dynamic_ncols=True)]
     tokens, truncation = {}, {}
     for view, limit in LIMITS.items():
         progress("tokenize", view=view, completed=0, total=len(views))
-        sequences = tokenizer([texts[view] for texts in views], truncation=False, padding=False)["input_ids"]
+        sequences = []
+        with tqdm(total=len(views), desc=f"Tokenize {view}", unit="movie", dynamic_ncols=True) as bar:
+            for start in range(0, len(views), TOKENIZE_BATCH_SIZE):
+                batch = views[start:start + TOKENIZE_BATCH_SIZE]
+                sequences.extend(tokenizer([texts[view] for texts in batch],
+                                           truncation=False, padding=False)["input_ids"])
+                bar.update(len(batch))
         sequences = [ids if texts[view] else [] for ids, texts in zip(sequences, views)]
         lengths = np.array([len(ids) for ids in sequences])
         tokens[view] = [torch.tensor(ids[:limit], dtype=torch.long) for ids in sequences]
