@@ -96,10 +96,4 @@ print("PASS: train/valid/test content matches the local splits.")
 print("Output:", output.resolve())
 PY
 
-# Build token/context caches and frozen Qwen embeddings with the same local pipeline.
-uv_python -m content_recsys prepare --device cuda \
-    --data-dir data/processed/ml20m_lightgcn \
-    --catalog data/processed/movie_content/catalog.parquet \
-    --baseline artifacts/multvae_ml20m/baseline_mps_seed42/best.pt \
-    --output-dir artifacts/content_multvae_ml20m
-printf 'Prepared data ready: %s/artifacts/content_multvae_ml20m/prepared\n' "$REPO_DIR"
+printf 'MovieLens splits and manual inputs ready: %s\n' "$REPO_DIR"
