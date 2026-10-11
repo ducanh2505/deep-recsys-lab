@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 
 from content_recsys.common import BASELINE, CATALOG, DATA, OUTPUT, device_for
+from training_logging.wandb import add_arguments, options_from_args
 
 
 def main() -> None:
@@ -35,6 +36,7 @@ def main() -> None:
         if name == "smoke":
             sub.add_argument("--mode", choices=("projection", "lora", "all"), default="projection")
         if name == "train":
+            add_arguments(sub)
             sub.add_argument("--layout", choices=("single", "multi"), required=True)
             sub.add_argument("--mode", choices=("projection", "lora"), required=True)
             sub.add_argument("--loss", choices=("bpr", "infonce"), required=True)
@@ -78,7 +80,8 @@ def main() -> None:
                      "negative_count": 128 if args.mode == "projection" else 16,
                      "max_epochs": args.max_epochs if args.max_epochs is not None else (10 if args.mode == "projection" else 3),
                      "patience": args.patience if args.patience is not None else (3 if args.mode == "projection" else 2),
-                     "checkpoint_batches": args.checkpoint_batches})
+                     "checkpoint_batches": args.checkpoint_batches},
+                    tracking_options=options_from_args(args, parser))
     elif args.command == "evaluate":
         from content_recsys.evaluate import evaluate_run
         value = evaluate_run(args.prepared.resolve(), args.run_dir.resolve(), device, args.split,

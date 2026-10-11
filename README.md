@@ -1,5 +1,13 @@
 # MovieLens 20M Recommendation Models
 
+Standalone content, Mult-VAE and LightGCN training logs to W&B Cloud by default
+(`ducanh250599/RecSys`). Load credentials with `uv run --env-file .env ...` and
+use a new output directory for a new experiment. Add `--wandb-mode offline` to
+sync later, or `--wandb-mode disabled` to keep only local logging. Only small JSON
+metadata is uploaded; reports, figures and checkpoints stay local. See
+[the W&B guide](docs/wandb_logging.md) for commands, resume, Vast.ai setup and
+proposed logging for search/retrain/evaluation.
+
 The content encoder + Mult-VAE benchmark compares BPR and InfoNCE across
 serialized/multiview embeddings and projection/LoRA training (48 runs). Projection
 runs on the Mac now (24 runs); LoRA is deferred to a future GPU stage (24 runs):
@@ -19,10 +27,10 @@ Mult-VAE in PyTorch, following [`paper/lightGCN.pdf`](paper/lightGCN.pdf) and
 
 ```bash
 uv sync
-uv run python -m lightgcn.train --batch-size 524288 --max-epochs 30 --eval-every 2 --patience 5 --validation-users 20000
+uv run --env-file .env python -m lightgcn.train --batch-size 524288 --max-epochs 30 --eval-every 2 --patience 5 --validation-users 20000 --output-dir artifacts/lightgcn_ml20m/wandb_seed42
 ```
 
-The prepared data must exist in `data/processed/ml20m_lightgcn/`. The current selected weights are in `artifacts/lightgcn_ml20m/best.pt`, with configuration, history, and final metrics beside them. The command above trains the original baseline settings and would replace that directory; pass `--output-dir` for a new run.
+The prepared data must exist in `data/processed/ml20m_lightgcn/`. The current selected weights are in `artifacts/lightgcn_ml20m/best.pt`, with configuration, history, and final metrics beside them. The command above trains the original baseline settings in a new subdirectory. New runs require an empty output directory; use another `--output-dir` or resume its new `last.pt` with `--resume`.
 
 See [`docs/data_preparation.md`](docs/data_preparation.md) for the dataset split, [`docs/lightgcn.md`](docs/lightgcn.md) for the model and training protocol, and [`docs/lightgcn_search.md`](docs/lightgcn_search.md) for the completed architecture search and reproduction command.
 

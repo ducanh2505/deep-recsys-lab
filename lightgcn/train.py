@@ -1,7 +1,7 @@
 """Train and evaluate LightGCN on the prepared MovieLens 20M splits."""
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import json
 import math
 import time
@@ -13,6 +13,8 @@ import torch.nn.functional as F
 
 from lightgcn.data import Dataset, Split, load_dataset, normalized_adjacency, sample_negatives
 from lightgcn.model import LightGCN
+from training_logging.runtime import memory_snapshot, restore_torch_rng, torch_rng_state
+from training_logging.wandb import TrainingTracker, add_arguments, options_from_args
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,12 +67,14 @@ def train_epoch(
     optimizer: torch.optim.Optimizer, rng: np.random.Generator,
     batch_size: int, l2: float, base_lr: float,
     step_offset: int = 0, warmup_steps: int = 0,
+    tracker: TrainingTracker | None = None, epoch: int = 1,
 ) -> dict[str, float | int]:
     """Train one shuffled epoch, retaining optimizer moments across warmup."""
     model.train()
     device = model.user_embedding.weight.device
     order = rng.permutation(len(data.train.users))
     epoch_loss = 0.0
+    started = time.monotonic()
     first_lr = last_lr = base_lr
     for batch, begin in enumerate(range(0, len(order), batch_size), start=1):
         lr = warmup_learning_rate(base_lr, step_offset + batch, warmup_steps)
@@ -103,6 +107,12 @@ def train_epoch(
         loss.backward()
         optimizer.step()
         epoch_loss += loss_value * len(indices)
+        step = step_offset + batch
+        if tracker is not None and tracker.wants_batch(step, boundary=batch == 1 or begin + batch_size >= len(order)):
+            tracker.log_batch(epoch, step, {"loss": loss_value, "bpr": float(bpr.detach()),
+                                           "regularization": float((l2 * reg).detach()),
+                                           "learning_rate": lr, "seconds": time.monotonic() - started,
+                                           "memory": memory_snapshot(device)})
     return {"train_loss": epoch_loss / len(order), "learning_rate_start": first_lr,
             "learning_rate_end": last_lr,
             "optimizer_steps": step_offset + math.ceil(len(order) / batch_size)}
@@ -173,6 +183,7 @@ def save_checkpoint(
     path: Path, model: LightGCN, data: Dataset, config: dict, epoch: int,
     valid: dict | None = None, optimizer: torch.optim.Optimizer | None = None,
     training: dict | None = None, rng: np.random.Generator | None = None,
+    resume_state: dict | None = None, tracking: dict | None = None,
 ) -> None:
     """Atomically save selected weights, provenance, and available Adam state."""
     payload = {
@@ -195,6 +206,10 @@ def save_checkpoint(
         payload["training"] = training
     if rng is not None:
         payload["numpy_rng_state"] = rng.bit_generator.state
+    if resume_state is not None:
+        payload["resume_state"] = resume_state
+    if tracking is not None:
+        payload["tracking"] = tracking
     temporary = path.with_suffix(".tmp")
     torch.save(payload, temporary)
     temporary.replace(path)
@@ -216,6 +231,7 @@ def main() -> None:
     parser.add_argument("--patience", type=int, default=5, help="Checks/epochs without sufficient improvement")
     parser.add_argument("--train-split", choices=["train", "train-valid"], default="train")
     parser.add_argument("--init-checkpoint", type=Path, help="Initialize weights only; use a fresh Adam optimizer")
+    parser.add_argument("--resume", type=Path, help="Resume a new-format last.pt in output-dir, including Adam/RNG/stopping state")
     parser.add_argument("--warmup-epochs", type=int, default=0, help="Linear per-step learning-rate warmup")
     parser.add_argument("--early-stopping", choices=["validation", "train-loss", "none"], default="validation")
     parser.add_argument("--min-delta", type=float, default=1e-4, help="Absolute train-loss improvement for patience")
@@ -223,7 +239,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=["auto", "cpu", "mps", "cuda"], default="auto")
     parser.add_argument("--skip-test", action="store_true", help="Do not evaluate test; use for validation-only search trials")
+    add_arguments(parser)
     args = parser.parse_args()
+    tracking_options = options_from_args(args, parser)
     try:
         layer_weights = (tuple(float(x) for x in args.layer_weights.split(","))
                          if args.layer_weights is not None else None)
@@ -238,14 +256,26 @@ def main() -> None:
         parser.error("warmup-epochs and min-delta must be nonnegative and finite")
     if args.train_split == "train-valid" and args.early_stopping == "validation":
         parser.error("train-valid cannot use validation early stopping; select train-loss or none")
-    for name in ("data_dir", "output_dir", "init_checkpoint"):
+    for name in ("data_dir", "output_dir", "init_checkpoint", "resume"):
         value = getattr(args, name)
         if value is not None:
             setattr(args, name, (ROOT / value).resolve())
     if args.init_checkpoint == args.output_dir / "best.pt":
         parser.error("output-dir would overwrite the initialization checkpoint")
-    if args.train_split == "train-valid" and args.output_dir.exists() and any(args.output_dir.iterdir()):
-        parser.error("train-valid requires an empty output directory")
+    if args.resume is not None:
+        if args.init_checkpoint is not None:
+            parser.error("resume and init-checkpoint are mutually exclusive")
+        if args.resume.parent != args.output_dir or args.resume.name != "last.pt":
+            parser.error("Resume from output-dir/last.pt; best.pt is for weight initialization")
+    elif args.output_dir.exists() and any(args.output_dir.iterdir()):
+        parser.error("Output directory is not empty; choose a new directory or pass --resume")
+    with TrainingTracker(args.output_dir, "lightgcn", tracking_options) as tracker:
+        run_training(args, layer_weights, tracker)
+
+
+def run_training(args: argparse.Namespace, layer_weights: tuple[float, ...] | None,
+                 tracker: TrainingTracker) -> None:
+    """Run fresh or resumed training after validating the command-line settings."""
     run_started = time.monotonic()
     device_name = args.device
     if device_name == "auto":
@@ -271,7 +301,8 @@ def main() -> None:
         del initial
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
+    config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()
+              if not key.startswith("wandb_")}
     config["layer_weights"] = list(model.layer_weights)
     config.update({"device_used": device_name, "n_users": data.n_users, "n_items": data.n_items,
                    "n_train": len(data.train.users), "n_valid": len(data.valid.users), "n_test": len(data.test.users)})
@@ -288,8 +319,6 @@ def main() -> None:
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
         config["data_canonical_sha256"] = manifest.get("canonical_sha256")
-    (args.output_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
-    print(json.dumps({"event": "start", "config": config}), flush=True)
     history = []
     best_recall = -math.inf
     best_epoch = 0
@@ -297,14 +326,59 @@ def main() -> None:
     loss_stopping = TrainLossStopping(args.patience, args.min_delta)
     checkpoint = args.output_dir / "best.pt"
     stop_reason = "max_epochs"
-    for epoch in range(1, args.warmup_epochs + args.max_epochs + 1):
+    first_epoch = 1
+    previous_stop = None
+    elapsed_before = 0.0
+    best_checkpoint = None
+    tracking_state = None
+    if args.resume is not None:
+        resumed = torch.load(args.resume, map_location="cpu", weights_only=True)
+        if "resume_state" not in resumed:
+            raise ValueError("Resume requires a last.pt created by the W&B-enabled trainer")
+        validate_checkpoint(resumed, data, model)
+        for key in ("train_split", "embedding_dim", "layers", "layer_weights", "learning_rate", "l2",
+                    "batch_size", "warmup_epochs", "early_stopping", "patience", "min_delta",
+                    "eval_every", "validation_users", "seed", "device_used", "data_canonical_sha256"):
+            if config.get(key) != resumed["config"].get(key):
+                raise ValueError(f"Resume config mismatch for {key}")
+        state = resumed["resume_state"]
+        first_epoch = resumed["epoch"] + 1
+        if args.warmup_epochs + args.max_epochs < resumed["epoch"]:
+            raise ValueError("max-epochs cannot be below already completed main epochs")
+        model.load_state_dict(resumed["state_dict"])
+        optimizer.load_state_dict(resumed["optimizer_state_dict"])
+        rng.bit_generator.state = resumed["numpy_rng_state"]
+        restore_torch_rng(state["torch_rng_state"], device)
+        history = state["history"]
+        best_recall, best_epoch, stale_checks = state["best_recall"], state["best_epoch"], state["stale_checks"]
+        loss_stopping = TrainLossStopping(**state["loss_stopping"])
+        best_checkpoint = state["best_checkpoint"]
+        previous_stop = state["stop_reason"]
+        elapsed_before = state["elapsed_seconds"]
+        tracking_state = resumed.get("tracking")
+        for key in ("initialization", "source_epoch", "init_checkpoint"):
+            config[key] = resumed["config"][key]
+        config["optimizer_initialization"] = "restored_adam"
+        if best_checkpoint is not None:
+            temporary = checkpoint.with_suffix(".tmp")
+            torch.save(best_checkpoint, temporary)
+            temporary.replace(checkpoint)
+        (args.output_dir / "history.json").write_text(json.dumps(history, indent=2) + "\n")
+    (args.output_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+    tracker.start(config, tracking_state, resumed=args.resume is not None)
+    print(json.dumps({"event": "resume" if args.resume else "start", "config": config}), flush=True)
+    epochs = range(first_epoch, args.warmup_epochs + args.max_epochs + 1) if previous_stop != "early_stopping" else ()
+    if previous_stop == "early_stopping":
+        stop_reason = previous_stop
+    for epoch in epochs:
         started = time.monotonic()
         phase = "warmup" if epoch <= args.warmup_epochs else "main"
         main_epoch = max(0, epoch - args.warmup_epochs)
         record = {"epoch": epoch, "phase": phase, "main_epoch": main_epoch,
                   **train_epoch(model, adjacency, data, optimizer, rng, args.batch_size,
                                 args.l2, args.learning_rate,
-                                step_offset=(epoch - 1) * batches_per_epoch, warmup_steps=warmup_steps),
+                                step_offset=(epoch - 1) * batches_per_epoch, warmup_steps=warmup_steps,
+                                tracker=tracker, epoch=epoch),
                   "seconds": time.monotonic() - started}
         save = stop = False
         valid = None
@@ -328,15 +402,34 @@ def main() -> None:
         if save:
             best_epoch = epoch
             save_checkpoint(checkpoint, model, data, config, epoch, valid,
-                            optimizer=optimizer, training=record.copy())
+                            optimizer=optimizer, training=record.copy(), tracking=tracker.checkpoint_state())
+            best_checkpoint = torch.load(checkpoint, map_location="cpu", weights_only=True)
         record["checkpoint_saved"] = save
         history.append(record)
         (args.output_dir / "history.json").write_text(json.dumps(history, indent=2) + "\n")
         print(json.dumps(record), flush=True)
+        tracker.log_epoch(epoch, record["optimizer_steps"], {
+            "train": {"loss": record["train_loss"], "learning_rate_start": record["learning_rate_start"],
+                      "learning_rate_end": record["learning_rate_end"]},
+            "valid": valid or {}, "timing": {"train_seconds": record["seconds"]},
+            "memory": memory_snapshot(device),
+            "selection": {"phase": phase, "main_epoch": main_epoch, "checkpoint_saved": save,
+                          "selected_epoch": best_epoch,
+                          "stale_checks": stale_checks if args.early_stopping == "validation" else loss_stopping.stale_epochs}})
+        save_checkpoint(args.output_dir / "last.pt", model, data, config, epoch, valid,
+                        optimizer=optimizer, training=record.copy(), rng=rng,
+                        tracking=tracker.checkpoint_state(), resume_state={
+                            "history": history, "best_checkpoint": best_checkpoint,
+                            "best_recall": best_recall, "best_epoch": best_epoch, "stale_checks": stale_checks,
+                            "loss_stopping": asdict(loss_stopping), "torch_rng_state": torch_rng_state(device),
+                            "stop_reason": "early_stopping" if stop else None,
+                            "elapsed_seconds": elapsed_before + time.monotonic() - run_started})
         if stop:
             stop_reason = "early_stopping"
             break
-    saved = torch.load(checkpoint, map_location=device, weights_only=True)
+    if best_checkpoint is None:
+        raise ValueError("No selected checkpoint is available")
+    saved = best_checkpoint
     model.load_state_dict(saved["state_dict"])
     metrics = {"selected_epoch": best_epoch, "selected_main_epoch": best_epoch - args.warmup_epochs,
                "selection_criterion": args.early_stopping, "selected_train_loss": saved["training"]["train_loss"],
@@ -351,9 +444,10 @@ def main() -> None:
         evaluation_started = time.monotonic()
         metrics["test"] = evaluate(model, adjacency, data, data.test, data.test_offsets, True)
         metrics["test_seconds"] = time.monotonic() - evaluation_started
-    metrics["total_seconds"] = time.monotonic() - run_started
+    metrics["total_seconds"] = elapsed_before + time.monotonic() - run_started
     (args.output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
     print(json.dumps({"event": "complete", "metrics": metrics}), flush=True)
+    tracker.complete(metrics)
 
 
 if __name__ == "__main__":

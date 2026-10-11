@@ -14,15 +14,17 @@ from content_recsys.data import load_prepared, profiles
 from content_recsys.encoder import ContentModel, ensure_frozen
 from content_recsys.evaluate import score_catalog
 from content_recsys.objective import candidates, epoch_samples, implicit_loss
+from training_logging.wandb import TrainingTracker, TrackingOptions
 
 
-def run(config: dict) -> dict:
+def run(config: dict, tracking_options: TrackingOptions | None = None) -> dict:
     """Lock a single training directory before starting or resuming it."""
     with exclusive_lock(Path(config["output"]) / ".training.lock"):
-        return _run(config)
+        with TrainingTracker(Path(config["output"]), "content_recsys", tracking_options) as tracker:
+            return _run(config, tracker)
 
 
-def _run(config: dict) -> dict:
+def _run(config: dict, tracker: TrainingTracker) -> dict:
     """Train one configuration and automatically resume its last atomic checkpoint."""
     config = dict(config)
     prepared, output = Path(config["prepared"]), Path(config["output"])
@@ -69,6 +71,7 @@ def _run(config: dict) -> dict:
     partial_loss, partial_users = 0.0, 0
     peaks = {key: 0.0 for key in memory_snapshot(device)}
     last_path = output / "last.pt"
+    tracking_state = None
     if last_path.exists():
         saved = torch.load(last_path, map_location="cpu", weights_only=True)
         if saved["config"] != config:
@@ -80,10 +83,14 @@ def _run(config: dict) -> dict:
         start_epoch, start_batch = saved["next_epoch"], saved["next_batch"]
         elapsed_before, peaks = saved["elapsed_seconds"], saved["memory"]
         partial_loss, partial_users = saved["partial_loss"], saved["partial_users"]
+        tracking_state = saved.get("tracking")
         if start_batch and sha256(output / "epoch_bank.npy") != saved["epoch_bank_sha256"]:
             raise ValueError("Epoch-start memory bank differs from the resume checkpoint")
         if best is not None:
             save_checkpoint(output / "best.pt", best)
+    tracker.start({**config, "environment": environment(),
+                   "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad)},
+                  tracking_state, resumed=last_path.exists())
     started = time.monotonic()
     emit(output, "training_start", config=config, environment=environment(), resumed=last_path.exists(),
          trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad))
@@ -100,7 +107,8 @@ def _run(config: dict) -> dict:
                                    "next_epoch": next_epoch, "next_batch": next_batch,
                                    "partial_loss": loss_sum, "partial_users": user_count,
                                    "elapsed_seconds": elapsed_before + time.monotonic() - started, "memory": peaks,
-                                   "epoch_bank_sha256": sha256(output / "epoch_bank.npy") if next_batch else None})
+                                   "epoch_bank_sha256": sha256(output / "epoch_bank.npy") if next_batch else None,
+                                   "tracking": tracker.checkpoint_state()})
 
     stop = "max_epochs"
     refreshed = None
@@ -145,6 +153,13 @@ def _run(config: dict) -> dict:
             optimizer.step()
             loss_sum += float(loss.detach()) * len(batch_users)
             user_count += len(batch_users)
+            global_step = (epoch - 1) * total_batches + batch_index + 1
+            if tracker.wants_batch(global_step, boundary=batch_index == first or batch_index + 1 == total_batches):
+                tracker.log_batch(epoch, global_step, {
+                    "loss": float(loss.detach()), "gradient_norm": float(norm),
+                    "learning_rate": optimizer.param_groups[0]["lr"],
+                    "learning_rates": {str(i): group["lr"] for i, group in enumerate(optimizer.param_groups)},
+                    "seconds": time.monotonic() - epoch_started, "memory": memory_snapshot(device)})
             if batch_index == first or (batch_index + 1) % 100 == 0:
                 for key, value in memory_snapshot(device).items():
                     peaks[key] = max(peaks[key], value)
@@ -162,7 +177,8 @@ def _run(config: dict) -> dict:
         if improved:
             best = {"config": config, "state_dict": model.learned_state(), "epoch": epoch,
                     "validation": valid, "item_ids": torch.from_numpy(data.item_ids),
-                    "user_ids": torch.from_numpy(data.user_ids), "embedding": refreshed.clone()}
+                    "user_ids": torch.from_numpy(data.user_ids), "embedding": refreshed.clone(),
+                    "tracking": tracker.checkpoint_state()}
             save_checkpoint(output / "best.pt", best)
             np.save(output / "embeddings.npy", refreshed.numpy())
             stale = 0
@@ -173,6 +189,11 @@ def _run(config: dict) -> dict:
         history.append(record)
         write_json(output / "history.json", history)
         emit(output, "epoch_complete", **record)
+        tracker.log_epoch(epoch, epoch * total_batches, {
+            "train": {"loss": record["loss"], "learning_rate": optimizer.param_groups[0]["lr"]},
+            "valid": valid, "timing": {"epoch_seconds": record["seconds"]},
+            "memory": memory_snapshot(device),
+            "selection": {"improved": improved, "selected_epoch": best["epoch"], "stale_checks": stale}})
         partial_loss, partial_users = 0.0, 0
         save(epoch + 1, 0, 0.0, 0)
     if best is None:
@@ -183,4 +204,5 @@ def _run(config: dict) -> dict:
               "memory": peaks, "stop_reason": stop, "embedding_sha256": sha256(output / "embeddings.npy")}
     write_json(output / "training.json", result)
     emit(output, "training_complete", **{k: v for k, v in result.items() if k != "history"})
+    tracker.complete({k: v for k, v in result.items() if k != "history"})
     return result

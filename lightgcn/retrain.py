@@ -174,7 +174,8 @@ def main() -> None:
     common = [sys.executable, "-m", "lightgcn.train", "--data-dir", str(args.data_dir),
               "--train-split", "train-valid", "--layers", "2", "--embedding-dim", "32",
               "--layer-weights", "0.975,0.0125,0.0125", "--learning-rate", "0.001", "--l2", "0.001",
-              "--batch-size", "524288", "--seed", "42", "--device", args.device]
+              "--batch-size", "524288", "--seed", "42", "--device", args.device,
+              "--wandb-mode", "disabled"]
     commands = {
         "scratch": common + ["--output-dir", str(args.output_dir / "scratch"), "--max-epochs", "6",
                              "--early-stopping", "none"],
