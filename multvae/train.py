@@ -15,9 +15,10 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import torch
 
-from multvae.data import Dataset, load_dataset
+from multvae.data import Dataset, load_dataset, sample_ranking_pairs
 from multvae.evaluate import CUTOFFS, evaluate
-from multvae.model import MultVAE, objective
+from multvae.model import MultVAE, combined_objective
+from training_logging.wandb import TrainingTracker, add_arguments, options_from_args
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,19 +109,31 @@ def main() -> None:
     parser.add_argument("--eval-batch-size", type=int, default=500)
     parser.add_argument("--anneal-steps", type=int, default=200000)
     parser.add_argument("--anneal-cap", type=float, default=0.2)
+    parser.add_argument("--nll-weight", type=float, default=1.0)
+    parser.add_argument("--bpr-weight", type=float, default=0.0)
+    parser.add_argument("--negative-count", type=int, default=16)
     parser.add_argument("--max-epochs", type=int, default=200)
     parser.add_argument("--patience", type=int, default=10)
     parser.add_argument("--early-stop-start", choices=("anneal-cap", "immediate"), default="anneal-cap")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--test-input", choices=("train", "train-valid"), default="train-valid")
     parser.add_argument("--resume", type=Path)
+    parser.add_argument("--restart-early-stopping", action="store_true",
+                        help="Start a new patience window on resume, retaining weights/optimizer/RNG and global best")
+    parser.add_argument("--restart-kl-annealing", action="store_true",
+                        help="Restart beta at zero on resume without resetting optimizer steps or RNG")
     parser.add_argument("--skip-test", action="store_true", help="For smoke checks or validation-only runs")
+    add_arguments(parser)
     args = parser.parse_args()
+    tracking_options = options_from_args(args, parser)
     if min(args.hidden_dim, args.latent_dim, args.batch_size, args.eval_batch_size,
-           args.anneal_steps, args.max_epochs, args.patience) < 1:
+           args.anneal_steps, args.max_epochs, args.patience, args.negative_count) < 1:
         parser.error("Dimensions, batch sizes, anneal-steps, max-epochs and patience must be positive")
     if not 0 <= args.dropout < 1 or not 0 <= args.anneal_cap <= 1 or args.learning_rate <= 0:
         parser.error("Require dropout in [0,1), anneal-cap in [0,1], and positive learning rate")
+    if (not all(math.isfinite(value) and value >= 0 for value in (args.nll_weight, args.bpr_weight))
+            or args.nll_weight + args.bpr_weight == 0):
+        parser.error("NLL/BPR weights must be finite, nonnegative, and at least one must be positive")
     if args.device == "mps" and not torch.backends.mps.is_available():
         parser.error("MPS is unavailable; training cannot fall back to CPU")
     if args.device == "mps" and os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK") == "1":
@@ -131,21 +144,35 @@ def main() -> None:
         parser.error("Output directory is not empty; choose a new directory or pass --resume")
     if args.resume is not None and args.resume.resolve().parent != args.output_dir:
         parser.error("Resume checkpoint must belong to output-dir")
+    if args.restart_early_stopping and args.resume is None:
+        parser.error("restart-early-stopping requires --resume")
+    if args.restart_kl_annealing and args.resume is None:
+        parser.error("restart-kl-annealing requires --resume")
+    with TrainingTracker(args.output_dir, "multvae", tracking_options) as tracker:
+        run_training(args, tracker)
+
+
+def run_training(args: argparse.Namespace, tracker: TrainingTracker, data: Dataset | None = None) -> None:
+    """Train after CLI validation and close W&B even on interruption or failure."""
     device = torch.device(args.device)
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
     run_started = time.monotonic()
     print(json.dumps({"event": "preflight", "data_dir": str(args.data_dir),
                       "checks": "schema, counts, canonical SHA-256, mappings, disjoint splits"}), flush=True)
-    data = load_dataset(args.data_dir)
+    data = load_dataset(args.data_dir) if data is None else data
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
+    config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()
+              if not key.startswith("wandb_")}
     config.update({"device_used": args.device, "n_users": data.n_users, "n_items": data.n_items,
                    "data_canonical_sha256": data.audit["canonical_sha256"],
                    "split_counts": data.audit["split_counts"], "eligible_users": data.audit["eligible_users"],
                    "metric_cutoffs": list(CUTOFFS), "selection_metric": "recall@20",
                    "recall_denominator": "number of target interactions",
                    "validation_input": "train", "test_mask": "train+valid",
+                   "objective": "weighted_nll_bpr_kl", "training_input": "full_train_history",
+                   "bpr_sampling": "one positive/user/epoch; uniform train-unseen negatives with replacement",
+                   "bpr_score": "raw_decoder_logits", "bpr_reduction": "mean_pairs_then_mean_users",
                    "environment": environment(),
                    "started_at": datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).isoformat(),
                    "paper": "https://arxiv.org/abs/1802.05814",
@@ -157,6 +184,7 @@ def main() -> None:
                                  eps=1e-8, weight_decay=0.0, foreach=False)
     history = []
     global_step = 0
+    kl_anneal_start_step = 0
     best_score = -math.inf
     best_checkpoint = None
     stale_checks = 0
@@ -165,17 +193,36 @@ def main() -> None:
     peaks = {key: 0.0 for key in memory_snapshot(device)}
     stop_reason = "max_epochs"
     previous_stop = None
+    tracking_state = None
     if args.resume is not None:
         saved = torch.load(args.resume, map_location="cpu", weights_only=True)
         verify_checkpoint(saved, data)
         for key in ("hidden_dim", "latent_dim", "dropout", "batch_size", "learning_rate",
-                    "anneal_steps", "anneal_cap", "patience", "early_stop_start", "seed", "test_input", "device"):
+                    "anneal_steps", "anneal_cap", "seed", "test_input", "device"):
             if config[key] != saved["config"][key]:
+                raise ValueError(f"Resume config mismatch for {key}")
+        restart_stopping = getattr(args, "restart_early_stopping", False)
+        for key in ("patience", "early_stop_start"):
+            if config[key] != saved["config"][key] and not restart_stopping:
+                raise ValueError(f"Changing {key} on resume requires --restart-early-stopping")
+        for key, default in (("nll_weight", 1.0), ("bpr_weight", 0.0), ("negative_count", 16)):
+            if config[key] != saved["config"].get(key, default):
                 raise ValueError(f"Resume config mismatch for {key}")
         model.load_state_dict(saved["state_dict"])
         optimizer.load_state_dict(saved["optimizer"])
         history = saved["history"]
         global_step = saved["global_step"]
+        kl_anneal_start_step = saved.get("kl_anneal_start_step", saved["config"].get("kl_anneal_start_step", 0))
+        if not 0 <= kl_anneal_start_step <= global_step:
+            raise ValueError("Invalid KL annealing step offset in checkpoint")
+        if getattr(args, "restart_kl_annealing", False):
+            config["kl_annealing_restart"] = {
+                "after_epoch": saved["epoch"], "global_step": global_step,
+                "previous_start_step": kl_anneal_start_step,
+            }
+            kl_anneal_start_step = global_step
+        elif "kl_annealing_restart" in saved["config"]:
+            config["kl_annealing_restart"] = saved["config"]["kl_annealing_restart"]
         best_checkpoint = saved["best_checkpoint"]
         best_score = best_checkpoint["validation"]["recall@20"]
         stale_checks = saved["stale_checks"]
@@ -183,6 +230,16 @@ def main() -> None:
         elapsed_before = saved["elapsed_seconds"]
         peaks = saved["observed_memory_peaks"]
         previous_stop = saved.get("stop_reason")
+        if restart_stopping:
+            config["early_stopping_restart"] = {
+                "after_epoch": saved["epoch"], "previous_stop_reason": previous_stop,
+                "previous_patience": saved["config"]["patience"], "patience": args.patience,
+                "previous_stale_checks": stale_checks, "global_best_retained": True,
+            }
+            previous_stop, stale_checks, stopping_active = None, 0, False
+        elif "early_stopping_restart" in saved["config"]:
+            config["early_stopping_restart"] = saved["config"]["early_stopping_restart"]
+        tracking_state = saved.get("tracking")
         torch.set_rng_state(saved["torch_rng_state"])
         rng.bit_generator.state = saved["numpy_rng_state"]
         if device.type == "mps":
@@ -191,9 +248,13 @@ def main() -> None:
             config[key] = saved["config"][key]
         # The embedded best checkpoint makes interrupted multi-file writes recoverable.
         save_checkpoint(args.output_dir / "best.pt", best_checkpoint)
+    config["kl_anneal_start_step"] = kl_anneal_start_step
     write_json(args.output_dir / "config.json", config)
     write_json(args.output_dir / "data_manifest.json", data.manifest)
     write_json(args.output_dir / "data_audit.json", data.audit)
+    tracker.start(config, tracking_state, resumed=args.resume is not None)
+    if getattr(args, "require_wandb_online", False) and not tracker.active:
+        raise RuntimeError("This experiment requires active W&B online logging")
 
     def emit(record: dict) -> None:
         line = json.dumps(record, allow_nan=False)
@@ -216,17 +277,21 @@ def main() -> None:
         epoch_started = time.monotonic()
         model.train()
         order = rng.permutation(data.n_users)
-        totals = torch.zeros(4, device=device)
+        positives, negatives = sample_ranking_pairs(data, order, args.seed, epoch, args.negative_count)
+        totals = torch.zeros(5, device=device)
         beta_sum = 0.0
-        beta_first = min(args.anneal_cap, global_step / args.anneal_steps)
+        beta_first = min(args.anneal_cap, (global_step - kl_anneal_start_step) / args.anneal_steps)
         batches = math.ceil(data.n_users / args.batch_size)
         for batch, start in enumerate(range(0, data.n_users, args.batch_size), start=1):
             users = order[start:start + args.batch_size]
             inputs = torch.from_numpy(data.batch(users)).to(device)
-            beta = min(args.anneal_cap, global_step / args.anneal_steps)
+            beta = min(args.anneal_cap, (global_step - kl_anneal_start_step) / args.anneal_steps)
             optimizer.zero_grad(set_to_none=True)
             logits, mean, logvar = model(inputs)
-            loss, nll, kl = objective(inputs, logits, mean, logvar, beta)
+            positive = torch.from_numpy(positives[start:start + len(users)]).to(device)
+            negative = torch.from_numpy(negatives[start:start + len(users)]).to(device)
+            loss, nll, bpr, kl = combined_objective(
+                inputs, logits, mean, logvar, beta, positive, negative, args.nll_weight, args.bpr_weight)
             if not bool(torch.isfinite(loss)):
                 raise FloatingPointError(f"Non-finite loss at epoch {epoch}, batch {batch}")
             loss.backward()
@@ -234,9 +299,17 @@ def main() -> None:
                                      for parameter in model.parameters()]).all()):
                 raise FloatingPointError(f"Non-finite gradient at epoch {epoch}, batch {batch}")
             optimizer.step()
-            totals += torch.stack((loss.detach(), nll.detach(), kl.detach(), beta * kl.detach())) * len(users)
+            totals += torch.stack((loss.detach(), nll.detach(), kl.detach(), beta * kl.detach(), bpr.detach())) * len(users)
             beta_sum += beta * len(users)
             global_step += 1
+            if tracker.wants_batch(global_step, boundary=batch == 1 or batch == batches):
+                tracker.log_batch(epoch, global_step, {
+                    "loss": float(loss.detach()), "nll": float(nll.detach()), "kl": float(kl.detach()),
+                    "weighted_kl": beta * float(kl.detach()), "beta": beta,
+                    "bpr": float(bpr.detach()), "weighted_bpr": args.bpr_weight * float(bpr.detach()),
+                    "weighted_nll": args.nll_weight * float(nll.detach()),
+                    "learning_rate": optimizer.param_groups[0]["lr"],
+                    "seconds": time.monotonic() - epoch_started, "memory": memory_snapshot(device)})
             if batch == 1 or batch % 100 == 0 or batch == batches:
                 observe_memory()
                 emit({"event": "batch", "epoch": epoch, "batch": batch, "batches": batches,
@@ -255,7 +328,7 @@ def main() -> None:
                                "user_ids": torch.from_numpy(data.user_ids.copy()),
                                "item_ids": torch.from_numpy(data.item_ids.copy()),
                                "config": config, "epoch": epoch, "global_step": global_step,
-                               "beta": beta, "validation": valid}
+                               "beta": beta, "validation": valid, "tracking": tracker.checkpoint_state()}
             save_checkpoint(args.output_dir / "best.pt", best_checkpoint)
         ready = args.early_stop_start == "immediate" or beta >= args.anneal_cap
         if ready and not stopping_active:
@@ -266,6 +339,8 @@ def main() -> None:
         record = {"epoch": epoch, "global_step": global_step,
                   "train_loss": losses[0], "train_nll": losses[1],
                   "train_kl": losses[2], "train_weighted_kl": losses[3],
+                  "train_bpr": losses[4], "train_weighted_bpr": args.bpr_weight * losses[4],
+                  "train_weighted_nll": args.nll_weight * losses[1],
                   "beta_first": beta_first, "beta_last": beta,
                   "beta_mean": beta_sum / data.n_users,
                   "train_seconds": train_seconds, "validation_seconds": validation_seconds,
@@ -277,15 +352,26 @@ def main() -> None:
         should_stop = stopping_active and stale_checks >= args.patience
         if should_stop:
             stop_reason = "early_stopping"
+        tracker.log_epoch(epoch, global_step, {
+            "train": {"loss": losses[0], "nll": losses[1], "kl": losses[2], "weighted_kl": losses[3],
+                      "bpr": losses[4], "weighted_bpr": args.bpr_weight * losses[4],
+                      "weighted_nll": args.nll_weight * losses[1],
+                      "beta_first": beta_first, "beta_last": beta, "beta_mean": beta_sum / data.n_users,
+                      "learning_rate": optimizer.param_groups[0]["lr"]},
+            "valid": valid, "timing": {"train_seconds": train_seconds, "validation_seconds": validation_seconds},
+            "memory": peaks, "selection": {"improved": improved, "selected_epoch": best_checkpoint["epoch"],
+                                             "early_stopping_active": stopping_active, "stale_checks": stale_checks}})
         last = {"state_dict": _cpu_tree(model.state_dict()), "optimizer": _cpu_tree(optimizer.state_dict()),
                 "user_ids": best_checkpoint["user_ids"], "item_ids": best_checkpoint["item_ids"],
                 "config": config, "epoch": epoch, "global_step": global_step,
+                "kl_anneal_start_step": kl_anneal_start_step,
                 "best_checkpoint": best_checkpoint, "history": history,
                 "stale_checks": stale_checks, "stopping_active": stopping_active,
                 "torch_rng_state": torch.get_rng_state(), "numpy_rng_state": rng.bit_generator.state,
                 "mps_rng_state": torch.mps.get_rng_state() if device.type == "mps" else None,
                 "observed_memory_peaks": peaks, "elapsed_seconds": elapsed_before + time.monotonic() - run_started,
-                "stop_reason": "early_stopping" if should_stop else None}
+                "stop_reason": "early_stopping" if should_stop else None,
+                "tracking": tracker.checkpoint_state()}
         save_checkpoint(args.output_dir / "last.pt", last)
         write_json(args.output_dir / "history.json", history)
         emit({"event": "epoch", **record, "observed_memory_peaks": peaks})
@@ -314,6 +400,7 @@ def main() -> None:
                     "observed_memory_peaks": peaks,
                     "completed_at": datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).isoformat()})
     write_json(args.output_dir / "metrics.json", metrics)
+    tracker.complete(metrics)
     from multvae.report import generate_report
     generate_report(args.output_dir)
     emit({"event": "complete", "metrics": metrics, "report": str(args.output_dir / "report.md")})

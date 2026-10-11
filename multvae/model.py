@@ -45,3 +45,16 @@ def objective(
     nll = -(history * F.log_softmax(logits, dim=1)).sum(dim=1).mean()
     kl = 0.5 * (mean.square() + logvar.exp() - 1 - logvar).sum(dim=1).mean()
     return nll + beta * kl, nll, kl
+
+
+def combined_objective(
+    history: torch.Tensor, logits: torch.Tensor, mean: torch.Tensor,
+    logvar: torch.Tensor, beta: float, positives: torch.Tensor,
+    negatives: torch.Tensor, nll_weight: float = 1.0, bpr_weight: float = 0.0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Combine full-history NLL, sampled decoder-logit BPR and annealed KL."""
+    _, nll, kl = objective(history, logits, mean, logvar, beta)
+    positive_scores = logits.gather(1, positives[:, None])
+    negative_scores = logits.gather(1, negatives)
+    bpr = F.softplus(negative_scores - positive_scores).mean(dim=1).mean()
+    return nll_weight * nll + bpr_weight * bpr + beta * kl, nll, bpr, kl

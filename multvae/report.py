@@ -65,7 +65,7 @@ def generate_report(directory: Path) -> Path:
         flat_rows.append(row)
     csv_tmp = directory / "history.csv.tmp"
     with csv_tmp.open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(flat_rows[0]))
+        writer = csv.DictWriter(stream, fieldnames=list(dict.fromkeys(key for row in flat_rows for key in row)))
         writer.writeheader()
         writer.writerows(flat_rows)
     csv_tmp.replace(directory / "history.csv")
@@ -85,6 +85,10 @@ def generate_report(directory: Path) -> Path:
     for key, label, color in (("train_loss", "Total objective", COLORS[0]),
                               ("train_nll", "Reconstruction NLL", COLORS[1])):
         axes[0].plot(epochs, [record[key] for record in history], label=label, color=color)
+    if "train_bpr" in last:
+        for key, label, color in (("train_weighted_nll", "Weighted NLL", COLORS[2]),
+                                  ("train_weighted_bpr", "Weighted BPR", COLORS[3])):
+            axes[0].plot(epochs, [record.get(key, float("nan")) for record in history], label=label, color=color)
     axes[0].set_title("Training reconstruction and objective")
     axes[0].set_ylabel("Mean loss per user")
     for key, label, color in (("train_kl", "Unweighted KL", COLORS[0]),
@@ -148,7 +152,7 @@ def generate_report(directory: Path) -> Path:
              f"Recall@20 (**{metrics['full_validation']['recall@20']:.6f}**). "
              f"Training completed **{len(history)} of at most {config['max_epochs']} epochs**; "
              f"termination reason: `{metrics['stop_reason']}`. Selected beta: **{metrics['selected_beta']:.6f}**.", "",
-             "This run uses the paper's published Mult-VAE PR architecture and the author's notebook baseline, "
+             "This run uses the paper's published Mult-VAE PR architecture with the configured training objective, "
              "adapted to the existing repository splits, seed, metric definitions, checkpoint selection and early stopping. "
              "It is not a reproduction of the paper's original strong-generalization experiment.", "",
              "## Configuration and execution environment", "",
@@ -161,7 +165,9 @@ def generate_report(directory: Path) -> Path:
              f"| Dropout | {config['dropout']} (training only) |",
              f"| Adam | lr {config['learning_rate']}; betas 0.9/0.999; eps 1e-8; weight decay 0 |",
              f"| Train / evaluation batch size | {config['batch_size']} / {config['eval_batch_size']} users |",
-             f"| KL schedule | min({config['anneal_cap']}, optimizer updates / {config['anneal_steps']}) |",
+             f"| KL schedule | min({config['anneal_cap']}, (optimizer updates - {config.get('kl_anneal_start_step', 0)}) / {config['anneal_steps']}) |",
+             f"| NLL / BPR weights | {config.get('nll_weight', 1.0)} / {config.get('bpr_weight', 0.0)} |",
+             f"| BPR negatives per user | {config.get('negative_count', 'Not sampled')} |",
              f"| Early stopping | {config['selection_metric']}; patience {config['patience']}; start {config['early_stop_start']} |",
              f"| Seed; device; dtype | {config['seed']}; {config['device_used']}; float32 |",
              f"| Hardware | {environment.get('chip', environment['architecture'])}; RAM {environment.get('ram_bytes', 0) / 2**30:.0f} GiB |",
@@ -177,7 +183,7 @@ def generate_report(directory: Path) -> Path:
              "Only train histories enter the training objective. Validation uses train histories as encoder input and "
              "masks train items. Test uses " + ("train plus validation histories" if config["test_input"] == "train-valid" else "train histories")
              + " as encoder input, keeps weights fixed and masks train plus validation items. "
-             "The entire catalog is ranked; there is no negative sampling or sampled-candidate evaluation. "
+             "The entire catalog is ranked; evaluation does not sample candidates. "
              "Dropout and latent sampling are disabled for evaluation, which uses the posterior mean. "
              "Test metrics are computed only after checkpoint selection.", "",
              "Recall@K is hits in the first K ranks divided by the user's total target interaction count, "
@@ -186,7 +192,7 @@ def generate_report(directory: Path) -> Path:
              "Metrics are macro means over all eligible users. Standard errors are the population standard "
              "deviation of per-user values divided by sqrt(user count); they are descriptive and do not measure seed variability.", "",
              "## Training trajectory", "",
-             "The objective is user-averaged multinomial reconstruction NLL plus beta-weighted KL. "
+             f"The objective is {config.get('nll_weight', 1.0)} * NLL + {config.get('bpr_weight', 0.0)} * BPR + beta * KL. "
              "NLL and KL are summed over their respective item/latent dimensions before averaging over users. "
              "Epoch means weight the final partial batch by its user count. A changing beta means total loss "
              "alone should not be interpreted as a fixed-objective convergence curve.", "",
@@ -195,6 +201,17 @@ def generate_report(directory: Path) -> Path:
                        ("train_kl", "Unweighted KL"), ("train_weighted_kl", "Weighted KL"),
                        ("beta_last", "End-of-epoch beta")):
         lines.append(f"| {label} | {selected_record[key]:.6f} | {last[key]:.6f} |")
+    if "train_bpr" in last:
+        for key, label in (("train_bpr", "Raw BPR"), ("train_weighted_bpr", "Weighted BPR"),
+                           ("train_weighted_nll", "Weighted NLL")):
+            lines.append(f"| {label} | {selected_record.get(key, float('nan')):.6f} | {last[key]:.6f} |")
+        lines.extend(["", "BPR applies softplus(negative logit - positive logit) directly to decoder logits, "
+                      "averaged across sampled negatives and then users. One positive and uniform train-unseen negatives "
+                      "with replacement are preselected per user/epoch using a separate seeded RNG. Full train history "
+                      "remains in the input and reconstruction target; regular training dropout is still enabled. "
+                      "Validation/test labels do not filter negatives. Unobserved items are not verified dislikes. "
+                      "This is an auxiliary ranking objective; it is not the original Mult-VAE likelihood objective. "
+                      "Raw and weighted terms have different scales; compare ranking metrics rather than total loss between runs.", ""])
     lines.extend(["", f"Last-epoch validation Recall@20: **{last['validation']['recall@20']:.6f}**; "
                   f"selected-epoch value: **{selected_record['validation']['recall@20']:.6f}**. "
                   "The saved model maximizes validation Recall@20 across every completed epoch, including epochs before the "

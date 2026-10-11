@@ -2,6 +2,7 @@
 data/
 __pycache__/
 artifacts/
+wandb/
 .env
 .env.*
 !.env.example

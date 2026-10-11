@@ -60,6 +60,34 @@ def canonical_sha256(frame: pl.DataFrame) -> str:
     return digest.hexdigest()
 
 
+def sample_ranking_pairs(
+    data: Dataset, users: np.ndarray, seed: int, epoch: int, negative_count: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Preselect one train positive and uniform unseen negatives per user/epoch.
+
+    Negatives are sampled with replacement using train membership only. Separate
+    RNG streams keep pairs identical across objective weights and KL schedules.
+    """
+    if negative_count < 1:
+        raise ValueError("negative_count must be positive")
+    lengths = np.diff(data.train.offsets)[users]
+    if np.any(lengths == 0) or np.any(lengths >= data.n_items):
+        raise ValueError("Ranking sampling requires positives and unseen items for every user")
+    rng = np.random.default_rng(np.random.SeedSequence([seed, epoch, 4107]))
+    positions = data.train.offsets[users] + np.floor(rng.random(len(users)) * lengths).astype(np.int64)
+    positives = data.train.items[positions].astype(np.int64)
+    negatives = rng.integers(data.n_items, size=(len(users), negative_count), dtype=np.int64)
+    # Sorted train keys provide membership checks without a dense user/item matrix.
+    while True:
+        keys = users[:, None].astype(np.int64) * data.n_items + negatives
+        positions = np.searchsorted(data.train.keys, keys)
+        invalid = ((positions < len(data.train.keys)) &
+                   (data.train.keys[np.minimum(positions, len(data.train.keys) - 1)] == keys))
+        if not invalid.any():
+            return positives, negatives
+        negatives[invalid] = rng.integers(data.n_items, size=int(invalid.sum()))
+
+
 def _split(frame: pl.DataFrame, user_ids: np.ndarray, item_ids: np.ndarray) -> Split:
     raw_users = frame["userId"].to_numpy()
     raw_items = frame["movieId"].to_numpy()

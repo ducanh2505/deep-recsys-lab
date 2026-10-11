@@ -8,6 +8,7 @@ dependencies = [
     "polars>=1.44.2",
     "torch>=2.14.0",
     "matplotlib>=3.10",
+    "wandb>=0.26,<0.27",
 ]
 
 [project.optional-dependencies]

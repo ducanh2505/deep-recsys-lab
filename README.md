@@ -89,10 +89,27 @@ repository's metric definitions. See [`docs/multvae.md`](docs/multvae.md) for th
 architecture, evaluation input, stopping/resume protocol and English report.
 
 ```bash
-uv run python -m multvae.train --device mps --max-epochs 200 --patience 10
+uv run --env-file .env python -m multvae.train --device mps --max-epochs 200 --patience 10 --output-dir artifacts/multvae_ml20m/wandb_seed42
 ```
 
-Mult-VAE outputs go to `artifacts/multvae_ml20m/baseline_mps_seed42/`, including
+The command above writes to `artifacts/multvae_ml20m/wandb_seed42/`, including
 checkpoints, exact configuration, epoch logs, final metrics and `report.md` with PNG
 figures. A new run requires an empty output directory; use `--resume` to continue
 the last completed epoch.
+
+To compare decoder-logit BPR, multinomial NLL and annealed KL in a ten-run,
+ten-epoch MPS objective grid with online logging:
+
+```bash
+uv run --env-file .env python -m multvae.search --wandb-mode online
+```
+
+See [`docs/multvae_objectives.md`](docs/multvae_objectives.md) for sampling,
+objective weights, the shorter KL schedule, early stopping and experiment limits.
+
+To continue the best four grid configurations toward 50 total epochs, then the
+validation winner toward 200, restarting KL annealing at each stage transition:
+
+```bash
+uv run --env-file .env python -m multvae.extend_search --patience200 10 --wandb-mode online
+```
